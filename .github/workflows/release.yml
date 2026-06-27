@@ -1,0 +1,98 @@
+# Release CI — builds the iOS app (Simulator .app) for a tag and attaches it to the
+# GitHub Release.
+#
+# WHY A SIMULATOR .app (not an .ipa): shipping a device .ipa requires Apple code
+# signing + a Developer account, which an unsigned open-source release can't provide.
+# A Simulator .app is an unsigned, runnable artifact anyone can install into the iOS
+# Simulator via `xcrun simctl` — no account, no signing. It's the right "binary" for
+# this stage; device/TestFlight distribution comes later.
+#
+# TRIGGERS: on tag push (v*) automatically, and via workflow_dispatch (tag input) to
+# backfill an existing release.
+#
+# HOW TO RUN AN ATTACHED BUILD:
+#   unzip HyperGit-iOS-Simulator-vX.app.zip
+#   xcrun simctl boot 'iPhone 15' || true
+#   xcrun simctl install booted HyperGit.app
+#   xcrun simctl launch booted ai.hypergit.mobile
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach to (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  app:
+    name: Build iOS Simulator .app + attach to release
+    runs-on: macos-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout (tag ref)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Show toolchain
+        run: |
+          set -euo pipefail
+          echo "Building tag: $TAG"
+          xcrun xcodebuild -version
+          swift --version
+
+      - name: Run core tests (gate)
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          swift test --parallel
+
+      - name: Install xcodegen
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          xcodegen --version
+
+      - name: Generate Xcode project
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          xcodegen generate
+
+      - name: Build Release .app (iOS Simulator)
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          xcodebuild -project HyperGit.xcodeproj \
+            -scheme HyperGit \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package .app
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          APP=$(find build/Build/Products -name 'HyperGit.app' -type d | head -1)
+          test -n "$APP"
+          echo "Found: $APP"
+          ditto -c -k --keepParent "$APP" "HyperGit-iOS-Simulator-${TAG}.app.zip"
+          ls -lh "HyperGit-iOS-Simulator-${TAG}.app.zip"
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "HyperGit-iOS-Simulator-${TAG}.app.zip" --clobber
