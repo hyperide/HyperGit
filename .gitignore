@@ -1,0 +1,57 @@
+# ── macOS ──
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# ── Secrets / env (never commit) ──
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials.toml
+
+# ── Xcode / Swift ──
+build/
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+xcuserdata/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+SwiftUsrPython/
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+Package.resolved
+
+# ── Node / server ──
+node_modules/
+dist/
+*.log
+.npm
+.yarn/cache
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ── Go ──
+*.exe
+*.test
+*.out
+
+# ── Rust ──
+target/
+
+# ── Local agent / runtime scratch ──
+.scratch/
+.cache/
+tmp/
