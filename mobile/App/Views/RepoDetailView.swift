@@ -28,7 +28,7 @@ struct RepoDetailView: View {
             }
         }
         .navigationTitle(repo.name)
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationBarTitle()
         .onAppear { store.select(repo) }
     }
 }
@@ -37,16 +37,18 @@ struct CommitsView: View {
     @Environment(AppStore.self) private var store
     let branch: String?
     var body: some View {
-        if store.commits.isEmpty {
-            PlaceholderView(icon: "clock.arrow.circlepath", title: "No commits loaded",
-                            subtitle: "Commit history is fetched when the repo is opened.")
-        } else {
-            List(store.commits) { commit in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(commit.subject).font(.subheadline.weight(.medium))
-                    HStack(spacing: 8) {
-                        Text(commit.shortSHA).font(.caption.monospaced()).foregroundStyle(.secondary)
-                        if let who = commit.authorLogin { Text(who).font(.caption).foregroundStyle(.secondary) }
+        Group {
+            if store.commits.isEmpty {
+                PlaceholderView(icon: "clock.arrow.circlepath", title: "No commits loaded",
+                                subtitle: "Commit history is fetched when the repo is opened.")
+            } else {
+                List(store.commits) { commit in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(commit.subject).font(.subheadline.weight(.medium))
+                        HStack(spacing: 8) {
+                            Text(commit.shortSHA).font(.caption.monospaced()).foregroundStyle(.secondary)
+                            if let who = commit.authorLogin { Text(who).font(.caption).foregroundStyle(.secondary) }
+                        }
                     }
                 }
             }

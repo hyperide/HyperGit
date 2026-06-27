@@ -49,7 +49,7 @@ struct FileViewerView: View {
             }
         }
         .navigationTitle((path as NSString).lastPathComponent)
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationBarTitle()
         .task(id: path) { await store.loadFile(path: path, ref: ref) }
     }
 }

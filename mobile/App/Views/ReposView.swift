@@ -9,7 +9,7 @@ struct ReposTab: View {
             ReposView()
                 .navigationTitle("Repositories")
                 .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .appTrailing) {
                         Button {
                             Task { await store.loadRepositories() }
                         } label: { Image(systemName: "arrow.clockwise") }
