@@ -1,0 +1,76 @@
+# Mobile CI — verifies the iOS app target builds and the core library tests pass.
+#
+# WHY CI (not local): building an iOS app needs the iOS SDK, which ships only with
+# Xcode. Runners `macos-latest` have Xcode preinstalled, so the iOS target is built
+# here even on machines that only have Command Line Tools. The core library is also
+# tested on the macOS runner (it `import`s the Apple-only `Security` framework, so it
+# cannot be tested on Linux runners).
+#
+# STEPS: (1) `swift test` the HyperGitCore package, (2) regenerate the Xcode project
+# from the committed project.yml via xcodegen, (3) build the HyperGit app target for
+# the iOS Simulator SDK.
+#
+# SCOPE: only runs when mobile/ or this workflow changes, to save runner minutes.
+
+name: mobile
+
+on:
+  pull_request:
+    paths:
+      - "mobile/**"
+      - ".github/workflows/mobile.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "mobile/**"
+      - ".github/workflows/mobile.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: swift test + iOS app build
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Show toolchain
+        run: |
+          set -euo pipefail
+          xcrun xcodebuild -version
+          swift --version
+
+      - name: Run core tests (swift test)
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          swift test --parallel
+
+      - name: Install xcodegen (project generator)
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          xcodegen --version
+
+      - name: Generate Xcode project
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          xcodegen generate
+
+      - name: Build iOS app (Simulator SDK)
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          xcodebuild -project HyperGit.xcodeproj \
+            -scheme HyperGit \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build
