@@ -29,6 +29,9 @@ xcuserdata/
 SwiftUsrPython/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 Package.resolved
+.build/
+mobile/HyperGit.xcodeproj/
+mobile/HyperGit.xcworkspace/
 
 # ── Node / server ──
 node_modules/
