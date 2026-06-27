@@ -1,5 +1,6 @@
 // Theme — shared colors, metrics, and reusable presentational helpers.
 import SwiftUI
+import HyperGitCore
 
 enum Theme {
     static let tint = Color(red: 0.30, green: 0.45, blue: 0.92)
@@ -38,5 +39,28 @@ struct StateBanner: View {
         case .loaded, .idle:
             EmptyView()
         }
+    }
+}
+
+extension View {
+    /// Inline navigation-bar title on iOS; no-op on macOS (cross-platform compile).
+    @ViewBuilder
+    func inlineNavigationBarTitle() -> some View {
+        #if os(iOS)
+        self.navigationBarTitleDisplayMode(.inline)
+        #else
+        self
+        #endif
+    }
+}
+
+extension ToolbarItemPlacement {
+    /// Cross-platform trailing toolbar placement (.topBarTrailing on iOS, .primaryAction elsewhere).
+    static var appTrailing: ToolbarItemPlacement {
+        #if os(iOS)
+        return .topBarTrailing
+        #else
+        return .primaryAction
+        #endif
     }
 }

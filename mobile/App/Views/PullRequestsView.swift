@@ -81,7 +81,7 @@ struct PullRequestDetailView: View {
             files = (try? await store.repoSource.pullRequestFiles(owner: repo.ownerLogin, repo: repo.name, number: number)) ?? []
         }
         .navigationTitle("PR #\(number)")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationBarTitle()
     }
 }
 

@@ -9,7 +9,7 @@ struct TicketsTab: View {
             TicketsView()
                 .navigationTitle("Tickets")
                 .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .appTrailing) {
                         Button {
                             Task { await store.loadTickets() }
                         } label: { Image(systemName: "arrow.clockwise") }
