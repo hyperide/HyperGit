@@ -1,18 +1,23 @@
-// Tests exercise real production logic: GitHubClient decoding & mapping via an
-// injected transport returning canned JSON. No network, no mock self-testing.
+// Tests exercise real production logic: GitHubClient decoding, mapping, pagination
+// and error propagation via an injected transport returning canned JSON + headers.
+// No network, no mock self-testing.
 import Testing
 import Foundation
 @testable import HyperGitCore
 
-@Suite("GitHubClient parsing")
+@Suite("GitHubClient parsing + pagination")
 struct GitHubClientTests {
-    /// Route canned JSON by the leading path segment, mirroring GitHub's REST layout.
-    private func client(_ routes: [String: Data]) -> GitHubClient {
-        let transport: HTTPTransport = { path, _ in
-            for (key, data) in routes where path.hasPrefix(key) { return data }
-            throw HTTPError.notFound
+    /// Closure-based router: given a request path, return (body, headers). Used so
+    /// pagination tests can return a `Link` header and distinct page-2 data.
+    private func client(_ router: @escaping @Sendable (String) -> (Data, [String: String])) -> GitHubClient {
+        GitHubClient(tokenProvider: { "t" }, transport: { path, _ in router(path) })
+    }
+    /// Prefix-routed client for single-page cases (no Link header).
+    private func routedClient(_ routes: [String: Data]) -> GitHubClient {
+        client { path in
+            for (prefix, data) in routes where path.hasPrefix(prefix) { return (data, [:]) }
+            return (Data("[]".utf8), [:])
         }
-        return GitHubClient(tokenProvider: { "t" }, transport: transport)
     }
 
     @Test("repos list maps to HGRepo with owner/login accessor")
@@ -27,7 +32,7 @@ struct GitHubClientTests {
           "html_url": "https://github.com/hyperide/HyperGit", "language": "Swift"
         }]
         """#.utf8)
-        let c = client(["user/repos": json])
+        let c = routedClient(["user/repos": json])
         let repos = try await c.repositories()
         #expect(repos.count == 1)
         #expect(repos[0].fullName == "hyperide/HyperGit")
@@ -49,7 +54,7 @@ struct GitHubClientTests {
            "pull_request": {"url": "x"}}
         ]
         """#.utf8)
-        let c = client(["repos/hyperide/HyperGit/issues": json])
+        let c = routedClient(["repos/hyperide/HyperGit/issues": json])
         let issues = try await c.issues(owner: "hyperide", repo: "HyperGit", state: .open)
         #expect(issues.count == 1)
         #expect(issues.first?.number == 1)
@@ -63,7 +68,7 @@ struct GitHubClientTests {
           "comments": 1, "created_at": "2024-01-01T00:00:00Z", "updated_at": "2024-01-01T00:00:00Z",
           "merged_at": null, "html_url": null}]
         """#.utf8)
-        let c = client(["repos/hyperide/HyperGit/pulls": json])
+        let c = routedClient(["repos/hyperide/HyperGit/pulls": json])
         let prs = try await c.pullRequests(owner: "hyperide", repo: "HyperGit", state: .open)
         #expect(prs.count == 1)
         #expect(prs[0].additions == 0)
@@ -80,10 +85,119 @@ struct GitHubClientTests {
           {"path": "x", "type": "weird", "sha": "c", "size": null}
         ], "truncated": false}
         """#.utf8)
-        let c = client(["repos/hyperide/HyperGit/git/trees": json])
+        let c = routedClient(["repos/hyperide/HyperGit/git/trees": json])
         let entries = try await c.fileTree(owner: "hyperide", repo: "HyperGit", branch: "main")
         #expect(entries.count == 2)
         #expect(entries.contains { $0.kind == .dir && $0.name == "src" })
         #expect(entries.contains { $0.kind == .file && $0.name == "README.md" })
+    }
+
+    @Test("file content base64 is decoded to real text")
+    func fileContentBase64() async throws {
+        // "Hello" → base64 "SGVsbG8="
+        let json = Data(#"""
+        {"path": "a.txt", "sha": "s", "size": 5, "encoding": "base64", "content": "SGVsbG8="}
+        """#.utf8)
+        let c = routedClient(["repos/o/r/contents": json])
+        let file = try await c.fileContent(owner: "o", repo: "r", path: "a.txt", ref: nil)
+        #expect(file.text == "Hello")
+        #expect(file.encoding == .utf8)
+    }
+
+    @Test("pull request files map status + patch (diff)")
+    func pullRequestFilesPatch() async throws {
+        let json = Data(#"""
+        [{"filename": "src/a.swift", "previous_filename": null, "status": "modified",
+          "additions": 2, "deletions": 1,
+          "patch": "@@ -1,1 +1,2 @@\n-old\n+new\n+code"}]
+        """#.utf8)
+        let c = routedClient(["repos/o/r/pulls/1/files": json])
+        let files = try await c.pullRequestFiles(owner: "o", repo: "r", number: 1)
+        #expect(files.count == 1)
+        #expect(files[0].path == "src/a.swift")
+        #expect(files[0].status == .modified)
+        #expect(files[0].additions == 2)
+        #expect(files[0].patch?.contains("+new") == true)
+    }
+
+    @Test("commits map subject, shortSHA and author login")
+    func commitsParsing() async throws {
+        let json = Data(#"""
+        [{"sha": "abcdef1234", "commit": {"message": "feat: x\n\nBody line.", "author": {"name": "n", "date": "2024-01-01T00:00:00Z"}},
+          "author": {"id": 1, "login": "octo", "name": null, "avatar_url": null, "html_url": null},
+          "html_url": null}]
+        """#.utf8)
+        let c = routedClient(["repos/o/r/commits": json])
+        let commits = try await c.commits(owner: "o", repo: "r", branch: nil)
+        #expect(commits.count == 1)
+        #expect(commits[0].subject == "feat: x")
+        #expect(commits[0].shortSHA == "abcdef1")
+        #expect(commits[0].authorLogin == "octo")
+    }
+
+    @Test("issue detail maps a single issue")
+    func issueDetail() async throws {
+        let json = Data(#"""
+        {"id": 42, "number": 7, "title": "Bug", "body": "desc", "state": "open",
+         "user": null, "assignees": [], "labels": [], "comments": 0,
+         "created_at": null, "updated_at": null, "html_url": null, "pull_request": null}
+        """#.utf8)
+        let c = routedClient(["repos/o/r/issues/7": json])
+        let issue = try await c.issue(owner: "o", repo: "r", number: 7)
+        #expect(issue.number == 7)
+        #expect(issue.title == "Bug")
+        #expect(issue.body == "desc")
+    }
+
+    @Test("currentUser maps the /user payload")
+    func currentUser() async throws {
+        let json = Data(#"""
+        {"id": 1, "login": "octocat", "name": "The Octocat",
+         "avatar_url": "https://x/a.png", "html_url": "https://github.com/octocat"}
+        """#.utf8)
+        let c = routedClient(["user": json])
+        let user = try await c.currentUser()
+        #expect(user.login == "octocat")
+        #expect(user.displayName == "The Octocat")
+        #expect(user.avatarURL?.absoluteString == "https://x/a.png")
+    }
+
+    // MARK: Pagination (pure parser + end-to-end)
+
+    @Test("nextLink parses rel=next and returns a relative path; nil otherwise")
+    func nextLinkParser() {
+        let withNext = #"<https://api.github.com/user/repos?page=2>; rel="next", <https://api.github.com/user/repos?page=5>; rel="last""#
+        #expect(GitHubClient.nextLink(from: withNext) == "user/repos?page=2")
+        let onlyLast = #"<https://api.github.com/user/repos?page=5>; rel="last""#
+        #expect(GitHubClient.nextLink(from: onlyLast) == nil)
+        #expect(GitHubClient.nextLink(from: "") == nil)
+    }
+
+    @Test("list calls follow the Link rel=next to accumulate pages")
+    func paginationFollowsLink() async throws {
+        let page1 = Data(#"""
+        [{"id": 1, "name": "a", "full_name": "o/a", "owner": {"id": 1, "login": "o", "name": null, "avatar_url": null, "html_url": null},
+          "description": null, "private": false, "default_branch": "main", "stargazers_count": 0,
+          "forks_count": 0, "open_issues_count": 0, "updated_at": null, "ssh_url": null, "clone_url": null, "html_url": null, "language": null}]
+        """#.utf8)
+        let page2 = Data(#"""
+        [{"id": 2, "name": "b", "full_name": "o/b", "owner": {"id": 1, "login": "o", "name": null, "avatar_url": null, "html_url": null},
+          "description": null, "private": false, "default_branch": "main", "stargazers_count": 0,
+          "forks_count": 0, "open_issues_count": 0, "updated_at": null, "ssh_url": null, "clone_url": null, "html_url": null, "language": null}]
+        """#.utf8)
+        let c = client { path in
+            if path.contains("page=2") { return (page2, [:]) }
+            return (page1, ["link": #"<https://api.github.com/user/repos?page=2>; rel="next""#])
+        }
+        let repos = try await c.repositories()
+        #expect(repos.map(\.name).sorted() == ["a", "b"])
+    }
+
+    @Test("transport errors propagate (e.g. 401 → unauthorized)")
+    func errorPropagation() async {
+        let c = GitHubClient(tokenProvider: { "t" }, transport: { _, _ in throw HTTPError.unauthorized })
+        var caught: Error?
+        do { _ = try await c.repositories() } catch { caught = error }
+        #expect((caught as? HTTPError) == .unauthorized)
     }
 }

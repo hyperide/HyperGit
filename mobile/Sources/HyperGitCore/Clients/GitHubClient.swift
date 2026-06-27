@@ -29,21 +29,24 @@ public struct GitHubClient: RepositorySource, TicketSource {
 
     // MARK: RepositorySource
 
+    /// Maximum pages fetched per list call (per_page=100 → up to 1000 items). Guards
+    /// against runaway pagination on huge result sets.
+    public static let maxPages = 10
+
     public func currentUser() async throws -> HGUser {
-        let data = try await transport("user", [:])
+        let (data, _) = try await transport("user", [:])
         return try GitHub.decode(GitHub.UserDTO.self, from: data).toModel()
     }
 
     public func repositories() async throws -> [HGRepo] {
-        let data = try await transport("user/repos?per_page=100&sort=updated&type=all", [:])
-        let dtos = try GitHub.decode([GitHub.RepoDTO].self, from: data)
-        return dtos.map { $0.toModel() }
+        try await paged("user/repos?per_page=100&sort=updated&type=all") {
+            try GitHub.decode([GitHub.RepoDTO].self, from: $0).map { $0.toModel() }
+        }
     }
 
     public func fileTree(owner: String, repo: String, branch: String?) async throws -> [HGFileEntry] {
-        let sha = (branch ?? "HEAD")
-        let path = "repos/\(owner)/\(repo)/git/trees/\(sha)?recursive=1"
-        let data = try await transport(path, [:])
+        let sha = branch ?? "HEAD"
+        let (data, _) = try await transport("repos/\(owner)/\(repo)/git/trees/\(sha)?recursive=1", [:])
         let tree = try GitHub.decode(GitHub.TreeDTO.self, from: data)
         return tree.tree.compactMap { $0.toModel() }
     }
@@ -51,49 +54,100 @@ public struct GitHubClient: RepositorySource, TicketSource {
     public func fileContent(owner: String, repo: String, path: String, ref: String?) async throws -> HGFileContent {
         var resource = "repos/\(owner)/\(repo)/contents/\(path)"
         if let ref { resource += "?ref=\(ref)" }
-        let data = try await transport(resource, [:])
-        let content = try GitHub.decode(GitHub.ContentDTO.self, from: data)
-        return try content.toModel()
+        let (data, _) = try await transport(resource, [:])
+        return try GitHub.decode(GitHub.ContentDTO.self, from: data).toModel()
     }
 
     public func pullRequests(owner: String, repo: String, state: HGPullRequest.State) async throws -> [HGPullRequest] {
-        let data = try await transport("repos/\(owner)/\(repo)/pulls?state=\(state.rawValue)&per_page=100&sort=updated", [:])
-        let dtos = try GitHub.decode([GitHub.PullRequestDTO].self, from: data)
-        return dtos.map { $0.toModel() }
+        try await paged("repos/\(owner)/\(repo)/pulls?state=\(state.rawValue)&per_page=100&sort=updated") {
+            try GitHub.decode([GitHub.PullRequestDTO].self, from: $0).map { $0.toModel() }
+        }
     }
 
     public func pullRequest(owner: String, repo: String, number: Int) async throws -> HGPullRequest {
-        let data = try await transport("repos/\(owner)/\(repo)/pulls/\(number)", [:])
+        let (data, _) = try await transport("repos/\(owner)/\(repo)/pulls/\(number)", [:])
         return try GitHub.decode(GitHub.PullRequestDTO.self, from: data).toModel()
     }
 
     public func pullRequestFiles(owner: String, repo: String, number: Int) async throws -> [HGFileChange] {
-        let data = try await transport("repos/\(owner)/\(repo)/pulls/\(number)/files?per_page=100", [:])
-        let dtos = try GitHub.decode([GitHub.PRFileDTO].self, from: data)
-        return dtos.map { $0.toModel() }
+        try await paged("repos/\(owner)/\(repo)/pulls/\(number)/files?per_page=100") {
+            try GitHub.decode([GitHub.PRFileDTO].self, from: $0).map { $0.toModel() }
+        }
     }
 
     public func commits(owner: String, repo: String, branch: String?) async throws -> [HGCommit] {
         var resource = "repos/\(owner)/\(repo)/commits?per_page=100"
         if let branch { resource += "&sha=\(branch)" }
-        let data = try await transport(resource, [:])
-        let dtos = try GitHub.decode([GitHub.CommitDTO].self, from: data)
-        return dtos.map { $0.toModel() }
+        return try await paged(resource) {
+            try GitHub.decode([GitHub.CommitDTO].self, from: $0).map { $0.toModel() }
+        }
     }
 
     public func issues(owner: String, repo: String, state: HGIssue.State) async throws -> [HGIssue] {
-        let data = try await transport("repos/\(owner)/\(repo)/issues?state=\(state.rawValue)&per_page=100&direction=desc", [:])
-        let dtos = try GitHub.decode([GitHub.IssueDTO].self, from: data)
-        // The issues endpoint also returns PRs; drop them.
-        return dtos.filter { $0.pullRequest == nil }.map { $0.toModel() }
+        try await paged("repos/\(owner)/\(repo)/issues?state=\(state.rawValue)&per_page=100&direction=desc") {
+            // The issues endpoint also returns PRs; drop them.
+            try GitHub.decode([GitHub.IssueDTO].self, from: $0)
+                .filter { $0.pullRequest == nil }
+                .map { $0.toModel() }
+        }
+    }
+
+    public func issue(owner: String, repo: String, number: Int) async throws -> HGIssue {
+        let (data, _) = try await transport("repos/\(owner)/\(repo)/issues/\(number)", [:])
+        return try GitHub.decode(GitHub.IssueDTO.self, from: data).toModel()
     }
 
     // MARK: TicketSource (GitHub Issues surfaced as tickets across all repos)
 
     public func tickets() async throws -> [HGTicket] {
-        let data = try await transport("issues?filter=assigned&state=open&per_page=100", [:])
-        let dtos = try GitHub.decode([GitHub.IssueDTO].self, from: data)
-        return dtos.map { $0.toTicket() }
+        try await paged("issues?filter=assigned&state=open&per_page=100") {
+            try GitHub.decode([GitHub.IssueDTO].self, from: $0).map { $0.toTicket() }
+        }
+    }
+
+    // MARK: Pagination
+
+    /// Fetch `path` and keep following the `Link: rel="next"` relation, accumulating
+    /// decoded items, up to `maxPages` pages.
+    private func paged<T>(_ path: String, decode: (Data) throws -> [T]) async throws -> [T] {
+        var result: [T] = []
+        var nextPath: String? = path
+        var pages = 0
+        while let current = nextPath {
+            pages += 1
+            let (data, headers) = try await transport(current, [:])
+            result.append(contentsOf: try decode(data))
+            nextPath = (pages >= Self.maxPages) ? nil : Self.nextLink(from: headers["link"] ?? "")
+        }
+        return result
+    }
+
+    /// Parse the GitHub `Link` header → the `rel="next"` target as a path relative to
+    /// baseURL (path + query), or nil when there is no next page. Pure + testable.
+    static func nextLink(from linkHeader: String) -> String? {
+        // Format: <https://api.github.com/x?page=2>; rel="next", <…>; rel="last"
+        for segment in linkHeader.split(separator: ",") {
+            let parts = segment.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count >= 2,
+                  let open = parts[0].firstIndex(of: "<"),
+                  let close = parts[0].firstIndex(of: ">"),
+                  open < close else { continue }
+            let url = String(parts[0][parts[0].index(after: open)..<close])
+            if parts.dropFirst().contains(where: { $0 == #"rel="next""# }) {
+                return relativePath(from: url)
+            }
+        }
+        return nil
+    }
+
+    /// Convert an absolute next-URL to a path (path + query) for the transport.
+    private static func relativePath(from url: String) -> String {
+        guard let comps = URLComponents(string: url), comps.host != nil else {
+            return url.hasPrefix("/") ? String(url.dropFirst()) : url
+        }
+        var rel = comps.path.hasPrefix("/") ? String(comps.path.dropFirst()) : comps.path
+        if let query = comps.query { rel += "?\(query)" }
+        return rel
     }
 }
 
@@ -189,11 +243,15 @@ enum GitHub {
         let encoding: String?       // "base64" expected for text
         let content: String?
         func toModel() throws -> HGFileContent {
+            let encoded = (content ?? "").replacingOccurrences(of: "\n", with: "")
+            // GitHub returns text files base64-encoded; decode now so .text yields the
+            // real source rather than the base64 string.
+            if (encoding ?? "").lowercased() == "base64",
+               let decoded = Data(base64Encoded: encoded) {
+                return HGFileContent(path: path, sha: sha, size: size, encoding: .utf8, raw: decoded)
+            }
             let enc = HGFileContent.Encoding(rawValue: (encoding ?? "none").lowercased()) ?? .none
-            let raw: Data
-            if let content { raw = Data(content.trimmingCharacters(in: .whitespacesAndNewlines).utf8) }
-            else { raw = Data() }
-            return HGFileContent(path: path, sha: sha, size: size, encoding: enc, raw: raw)
+            return HGFileContent(path: path, sha: sha, size: size, encoding: enc, raw: Data(encoded.utf8))
         }
     }
 
