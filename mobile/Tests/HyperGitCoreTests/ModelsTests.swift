@@ -39,6 +39,7 @@ struct ModelsTests {
             func pullRequestFiles(owner: String, repo: String, number: Int) async throws -> [HGFileChange] { [] }
             func commits(owner: String, repo: String, branch: String?) async throws -> [HGCommit] { [] }
             func issues(owner: String, repo: String, state: HGIssue.State) async throws -> [HGIssue] { [] }
+            func issue(owner: String, repo: String, number: Int) async throws -> HGIssue { throw HTTPError.invalidResponse }
         }
         let store = await AppStore(repoSource: Failing(), cache: cache)
         await store.loadRepositories()

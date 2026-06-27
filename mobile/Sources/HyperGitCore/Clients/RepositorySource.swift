@@ -13,6 +13,7 @@ public protocol RepositorySource: Sendable {
     func pullRequestFiles(owner: String, repo: String, number: Int) async throws -> [HGFileChange]
     func commits(owner: String, repo: String, branch: String?) async throws -> [HGCommit]
     func issues(owner: String, repo: String, state: HGIssue.State) async throws -> [HGIssue]
+    func issue(owner: String, repo: String, number: Int) async throws -> HGIssue
 }
 
 /// Source-agnostic factory for previews/tests: returns canned data, never networks.
@@ -49,4 +50,9 @@ public struct PreviewRepositorySource: RepositorySource {
     public func pullRequestFiles(owner: String, repo: String, number: Int) async throws -> [HGFileChange] { [] }
     public func commits(owner: String, repo: String, branch: String?) async throws -> [HGCommit] { [] }
     public func issues(owner: String, repo: String, state: HGIssue.State) async throws -> [HGIssue] { issues }
+    public func issue(owner: String, repo: String, number: Int) async throws -> HGIssue {
+        issues.first ?? HGIssue(id: 1, number: number, title: "Sample issue", body: nil,
+                                state: .open, author: nil, assignees: [], labels: [],
+                                commentsCount: 0, createdAt: nil, updatedAt: nil, htmlURL: nil)
+    }
 }

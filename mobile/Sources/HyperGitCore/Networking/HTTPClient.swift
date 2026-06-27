@@ -15,8 +15,10 @@ public enum HTTPError: Error, Equatable, Sendable {
 }
 
 /// A transport returns the raw body bytes for a GET of `path` (relative to the
-/// client base URL, may include a query string) with the given extra headers.
-public typealias HTTPTransport = @Sendable (String, [String: String]) async throws -> Data
+/// client base URL, may include a query string) plus the response headers
+/// (keys lowercased) for the given extra headers. Headers are exposed so clients
+/// can follow pagination `Link` relations.
+public typealias HTTPTransport = @Sendable (String, [String: String]) async throws -> (Data, [String: String])
 
 public struct HTTPClient: Sendable {
     public let session: URLSession
@@ -28,7 +30,8 @@ public struct HTTPClient: Sendable {
     }
 
     /// Build a default GET transport for a base URL with a token provider and
-    /// default headers. Returns the body on 2xx, maps status codes to HTTPError.
+    /// default headers. Returns the body + response headers on 2xx, maps status
+    /// codes to HTTPError.
     public static func transport(
         baseURL: URL,
         tokenProvider: @escaping @Sendable () -> String?,
@@ -57,7 +60,14 @@ public struct HTTPClient: Sendable {
             }
             guard let http = resp as? HTTPURLResponse else { throw HTTPError.invalidResponse }
             switch http.statusCode {
-            case 200..<300: return data
+            case 200..<300:
+                var respHeaders: [String: String] = [:]
+                for (key, value) in http.allHeaderFields {
+                    if let k = (key as? String)?.lowercased(), let v = value as? String {
+                        respHeaders[k] = v
+                    }
+                }
+                return (data, respHeaders)
             case 401: throw HTTPError.unauthorized
             case 403:
                 let retry = (http.value(forHTTPHeaderField: "Retry-After")).flatMap { Int($0) }
