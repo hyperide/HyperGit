@@ -14,13 +14,19 @@ mobile/
   project.yml                # xcodegen spec → HyperGit.xcodeproj
 ```
 
-## Build
+## Build & Run
 
 Core library + tests (macOS host):
 
 ```sh
 swift build
-swift test
+swift test --parallel
+```
+
+**Run native macOS app** (no Xcode, no Apple account):
+
+```sh
+swift run HyperGitApp
 ```
 
 iOS app (generate the project once, then build for the simulator):

@@ -12,11 +12,17 @@ let package = Package(
     platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
         .library(name: "HyperGitCore", targets: ["HyperGitCore"]),
+        .executable(name: "HyperGitApp", targets: ["HyperGitApp"]),
     ],
     targets: [
         .target(
             name: "HyperGitCore",
             path: "Sources/HyperGitCore"
+        ),
+        .executableTarget(
+            name: "HyperGitApp",
+            dependencies: ["HyperGitCore"],
+            path: "App"
         ),
         .testTarget(
             name: "HyperGitCoreTests",
