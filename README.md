@@ -1,97 +1,107 @@
 # HyperGit
 
 [![mobile CI](https://github.com/hyperide/HyperGit/actions/workflows/mobile.yml/badge.svg)](https://github.com/hyperide/HyperGit/actions/workflows/mobile.yml)
+[![release](https://github.com/hyperide/HyperGit/actions/workflows/release.yml/badge.svg)](https://github.com/hyperide/HyperGit/actions/workflows/release.yml)
 [![issues](https://img.shields.io/github/issues/hyperide/HyperGit?color=blue)](https://github.com/hyperide/HyperGit/issues)
 
-**Открытая замена GitHub** (git-сервер, CI/CD, статик-хостинг, snippets, issues,
-агентские work-логи, live-presence, GraphQL, PR, умный blame) **+ local-first
-мобильное приложение** на SwiftUI (офлайн-просмотрщик GitHub/Linear → эволюция в
-агенто-центричную мобильную ОС).
+**An open-source replacement for GitHub** (git server, CI/CD, static hosting, snippets,
+issues, agent work-logs, live presence, GraphQL, PRs, smart blame) **with a local-first
+SwiftUI mobile app** (offline viewer for GitHub + Linear).
 
-> Статус: ранняя разработка (Phase 1 — mobile MVP). Спека авторитетна:
-> [`docs/SPEC.md`](docs/SPEC.md).
+> Status: early development (Phase 1 — mobile MVP). The spec is authoritative:
+> [`docs/SPEC.md`](docs/SPEC.md). Documentation, issues, and PRs are English-only.
 
 ---
 
-## Что это
+## What it is
 
-HyperGit — два связанных продукта в одном монорепо:
+HyperGit is an open-source GitHub replacement with a first-class local-first mobile
+client, in one monorepo:
 
-1. **Платформа** (замена GitHub) — git-хостинг поверх настоящих bare-репозиториев,
-   CI/CD совместимый с GitHub Actions, статик/SSG-хостинг, snippets (gist), `gh`-CLI
-   shim, issues, work-логи агентов на коммитах, Notion-подобный wiki, live-presence
-   («кто где и что редактирует» в IDE + на уровне агентских хуков), GraphQL + webhooks,
-   PR, быстрый smart blame, smart search (fuzzy + индекс + символы + AI). См.
-   [SPEC §1](docs/SPEC.md#1-hypergit--замена-github).
-2. **Mobile (SwiftUI, local-first)** — офлайн-доступ к репозиториям, файлам, PR, issues,
-   коммитам (GitHub) и тикетам (Linear); semantic diff, AI-вопросы, smart search/blame.
-   См. [SPEC §2](docs/SPEC.md#2-hypergit-mobile--swiftui-local-first-ближайший-конкретный-объём).
+1. **Platform** (GitHub replacement) — git hosting on real bare repositories, a
+   GitHub-Actions-compatible CI/CD, static/SSG hosting, snippets (gists), a `gh` CLI
+   shim, issues, agent work-logs attached to commits, a Notion-like wiki, live presence
+   ("who is editing what, where" — in the IDE and at the agent-hook level), GraphQL +
+   webhooks, PRs, fast smart blame, and smart search (fuzzy + index + symbols + AI). See
+   [SPEC §1](docs/SPEC.md#1-hypergit--the-github-replacement-platform).
+2. **Mobile** (SwiftUI, local-first) — offline access to repositories, files, PRs,
+   issues, commits (GitHub) and tickets (Linear); semantic diff, AI questions, smart
+   search/blame. See [SPEC §2](docs/SPEC.md#2-hypergit-mobile--swiftui-local-first-the-current-concrete-scope).
 
-**Non-goals:** другие VCS (только git), свой projects-менеджер (→ Linear), свой
-browser-IDE (→ hyperide). См. [SPEC §4](docs/SPEC.md#4-non-goals-что-не-делаем).
+**Non-goals:** other VCS (git only), a projects board (use Linear), an in-browser IDE
+(that's hyperide). See [SPEC §3](docs/SPEC.md#3-non-goals-what-we-do-not-build).
 
-## Структура репозитория
+## Repository layout
 
 ```
-docs/SPEC.md     # мастерспека — источник правды
-server/          # бэкенд платформы (git-сервер, API, CI, hosting) — планируется
-mobile/          # SwiftUI iOS-приложение + ядро HyperGitCore (Phase 1)
-ci/              # rig-managed CI gate-скрипты
-.github/         # workflows, PR-шаблон (rig-managed)
-rig.yaml         # декларативные guardrails репозитория
-AGENTS.md        # конвенции для агентов (и людей)
+docs/SPEC.md     # master spec — source of truth
+server/          # platform backend (git server, API, CI, hosting) — planned
+mobile/          # SwiftUI iOS app + HyperGitCore (Phase 1)
+ci/              # rig-managed CI gate scripts
+.github/         # workflows, PR template (rig-managed)
+rig.yaml         # declarative repo guardrails
+AGENTS.md        # conventions for agents (and humans)
 ```
 
-## Mobile — быстрый старт
+## Mobile — quick start
 
 ```sh
 cd mobile
 
-# Ядро + тесты (работает без Xcode, на macOS-хосте)
+# Core library + tests (works without Xcode, on a macOS host)
 swift build
 swift test --parallel
 
-# iOS-приложение (нужен Xcode — локально или в CI)
+# iOS app (needs Xcode — locally or in CI)
 brew install xcodegen
 xcodegen generate
 xcodebuild -scheme HyperGit -destination 'generic/platform=iOS Simulator' build
-# или открыть HyperGit.xcodeproj в Xcode и запустить на симуляторе
+# or open HyperGit.xcodeproj in Xcode and run on a simulator
 ```
 
-Приложение: открой **Settings**, вставь GitHub PAT (`repo`) и/или Linear API-ключ,
-потом — Repos / Tickets с pull-to-refresh. Всё скачанное кешируется и доступно офлайн.
+To use the app: open **Settings**, paste a GitHub PAT (`repo` scope) and/or a Linear API
+key, then pull-to-refresh on Repos / Tickets. Everything fetched is cached and works
+offline.
 
-Архитектура (`mobile/`): `Views → AppStore (@Observable, @MainActor) →
-RepositorySource / TicketSource (протоколы) → GitHubClient / LinearClient → CacheStore`.
-Бэкенд за протоколом, чтобы GitHub позже заменить на собственный HyperGit без
-переписывания UI. Подробности — в [`mobile/README.md`](mobile/README.md).
+Architecture (`mobile/`): `Views → AppStore (@Observable, @MainActor) →
+RepositorySource / TicketSource (protocols) → GitHubClient / LinearClient → CacheStore`.
+The backend sits behind a protocol so GitHub can be swapped for HyperGit later without
+touching the UI. Details in [`mobile/README.md`](mobile/README.md).
+
+## Releases & TestFlight
+
+- **Releases:** tagged builds ship a Simulator `.app` artifact (no Apple account needed)
+  via the `release` workflow. See [Releases](https://github.com/hyperide/HyperGit/releases).
+- **TestFlight:** the `testflight` workflow builds a signed `.ipa` and uploads it to App
+  Store Connect. It requires Apple signing secrets and is gated behind the
+  `ENABLE_TESTFLIGHT` repo variable. Setup: [`docs/testflight.md`](docs/testflight.md).
 
 ## Roadmap
 
-- **Phase 0–1** ✅ — bootstrap, спека, конвенции, каркас мобилы, GitHub-клиент
+- **Phase 0–1** ✅ — bootstrap, spec, conventions, mobile scaffold, GitHub client
   ([#1](https://github.com/hyperide/HyperGit/issues/1),
   [#2](https://github.com/hyperide/HyperGit/issues/2)).
-- **Phase 1 (в работе)** — Linear-клиент [#3](https://github.com/hyperide/HyperGit/issues/3),
-  SwiftData-кеш [#4](https://github.com/hyperide/HyperGit/issues/4),
-  UI-экраны [#5](https://github.com/hyperide/HyperGit/issues/5).
-- **Phase 2** — semantic diff, AI-вопросы, smart search/blame [#7](https://github.com/hyperide/HyperGit/issues/7).
-- **Phase 3** — бэкенд платформы (решение по Forgejo/Gitea-форку) [#6](https://github.com/hyperide/HyperGit/issues/6).
+- **Phase 1 (in progress)** — Linear client [#3](https://github.com/hyperide/HyperGit/issues/3),
+  SwiftData cache [#4](https://github.com/hyperide/HyperGit/issues/4),
+  UI screens [#5](https://github.com/hyperide/HyperGit/issues/5).
+- **Phase 2** — semantic diff, AI questions, smart search/blame [#7](https://github.com/hyperide/HyperGit/issues/7).
+- **Phase 3** — platform backend (Forgejo/Gitea fork decision) [#6](https://github.com/hyperide/HyperGit/issues/6).
 
-Полная картина — [SPEC §7](docs/SPEC.md#7-roadmap-фазы).
+Full picture: [SPEC §6](docs/SPEC.md#6-roadmap-phases).
 
-## Конвенции
+## Conventions
 
-- **Коммиты:** Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`), атомарные, часто.
-- **Ветви:** feature-ветка → PR (squash-merge). `main` всегда зелёный; CI-gates не
-  байпасятся.
-- **Спека:** любое изменение поведения обновляет `docs/SPEC.md` в том же PR.
-- **Задачи:** GitHub Issues (через `task` CLI).
-- **Агенты — first-class:** API/хуки/UI рассчитаны на машины тоже.
+- **Commits:** Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`), atomic, often.
+- **Branches:** feature branch → PR (squash-merge). `main` stays green; CI gates are not
+  bypassed.
+- **Spec:** any behavior change updates `docs/SPEC.md` in the same PR.
+- **Tasks:** GitHub Issues (via the `task` CLI).
+- **Agents are first-class:** APIs/hooks/UI are designed for machines too.
 
-Подробнее — [`AGENTS.md`](AGENTS.md).
+More in [`AGENTS.md`](AGENTS.md).
 
-## Лицензия
+## License
 
-Open source. Конкретная лицензия уточняется (см.
-[SPEC §6](docs/SPEC.md#6-исследование-open-source-альтернатив) — рассматривается форк
-Forgejo/Gitea, MIT).
+Open source. The exact license is TBD (see
+[SPEC §5](docs/SPEC.md#5-open-source-alternatives-research) — a Forgejo/Gitea fork, MIT,
+is under consideration).

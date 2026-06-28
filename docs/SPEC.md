@@ -1,249 +1,255 @@
 # HyperGit — Master Spec
 
-> **Статус:** Authoritative. Спека — источник правды. Если код расходится со спекой, расхождение = баг (либо код, либо устаревшая спека — обнови в том же PR).
+> **Status:** Authoritative. The spec is the source of truth. If code and spec disagree,
+> the disagreement is the bug — fix the code, or update the spec in the same PR.
 > **Repo:** `git@github.com:hyperide/HyperGit.git` · **Org:** `hyperide`
-> **Последнее обновление:** 2026-06-27
+> **Language:** All documentation, issues, and PRs are English-only.
 
-HyperGit — это, в конечном счёте, **два связанных продукта** в одном монорепо:
+HyperGit is an **open-source replacement for GitHub** — git hosting, CI/CD, static
+hosting, snippets, issues, agent work-logs, live presence, GraphQL, pull requests, and
+a fast smart blame — with a **local-first SwiftUI mobile client** that works offline
+against GitHub and Linear today and against the HyperGit backend later.
 
-1. **HyperGit (сервер/платформа)** — открытая замена GitHub: git-хостинг, CI/CD, статик-хостинг, snippets, issues, work-логи агентов, live-presence, GraphQL, PR, умный blame, мобильный клиент.
-2. **HyperOS / HyperGit Mobile** — local-first мобильное приложение (SwiftUI), которое начинается как офлайн-просмотрщик GitHub + Linear, а в долгосрочной перспективе эволюционирует в собственную агенто-центричную мобильную ОС.
-
-Оба продукта растут из одного корня: **git как универсальный слой данных**, **агенты как первоклассные пользователи**, **local-first** мобильный доступ.
-
----
-
-## 0. Принципы
-
-- **Git — единственная система версий.** Других VCS не делаем (см. Non-goals).
-- **Агенты — первоклассные пользователи.** Все API, логи, хуки и UI рассчитаны на то, что их читает/пишет не только человек.
-- **Local-first на мобиле.** Данные/код/PR/тикеты выкачиваются и доступны офлайн; синхронизация — фоновая.
-- **Open source.** Изучаем существующие альтернативы и переиспользуем, а не строим с нуля там, где разумно (см. §6).
-- **Спека авторитетна.** Любое изменение поведения идёт через изменение спеки.
+Both halves grow from the same roots: **git as the universal data layer**, **agents as
+first-class users**, and **local-first** mobile access.
 
 ---
 
-## 1. HyperGit — замена GitHub
+## 0. Principles
 
-### 1.1 Git-хостинг
-- **git bare repo** как нативное хранилище. Сервер работает поверх настоящих bare-репозиториев (не изобретает свой формат объектного хранилища).
-- Push/pull/fetch/clone через стандартный git-протокол (SSH + HTTPS smart HTTP).
-- Импорт существующих репозиториев из GitHub/GitLab.
+- **Git is the only version control system.** No other VCS (see Non-goals).
+- **Agents are first-class users.** Every API, log, hook, and UI surface is designed to
+  be read and written by machines as well as people.
+- **Local-first on mobile.** Code, PRs, issues, and tickets are downloaded and available
+  offline; synchronization is background or on demand.
+- **Open source.** Study and reuse existing alternatives where it is sensible rather than
+  building from scratch (see §5).
+- **The spec is authoritative.** Any behavior change is made through a spec change.
 
-### 1.2 CI/CD (клон GitHub Actions)
-- Совместимый с GitHub Actions формат workflow-файла (`*.yml`), поддержка `gh actions` clone — миграция одним копированием.
-- **Templates** — библиотека переиспользуемых шаблонов.
-- **Easy multi-stages** — декларативные пайплайны с явными stage-границами, артефактами между стадиями и fan-out/fan-in.
-- Раннеры: self-hosted first (контейнерные), с возможностью burst в облако.
-- Reuse: изучить [act](https://github.com/nektos/act) / Gitea Actions для совместимости раннера.
+---
 
-### 1.3 Static / SSG hosting (клон GitHub Pages)
-- Публикация статических сайтов и SSG (билд → артефакт → раздача).
-- Привязка к ветке/папке/тегу, кастомные домены, HTTPS (Let's Encrypt).
-- `gh docs` clone — совместимый UX.
+## 1. HyperGit — the GitHub replacement (platform)
 
-### 1.4 Snippets (клон Gist)
-- Snippets с версионированием, fork, комментариями.
-- **`gh gist` CLI** совместимость + собственный CLI-шейм.
-- **Linking с репо/оргами** — сниппет может ссылаться на репо/файл/строку и обратно.
+### 1.1 Git hosting
+- **Native bare repositories** as the storage backend. The server operates on real bare
+  git repositories rather than inventing its own object store.
+- Push/pull/fetch/clone over standard git protocols (SSH + HTTPS smart HTTP).
+- Import existing repositories from GitHub/GitLab.
+
+### 1.2 CI/CD (a GitHub Actions compatible clone)
+- Workflow files (`*.yml`) compatible with the GitHub Actions format, supporting
+  one-copy migration ("gh actions clone").
+- **Templates** — a library of reusable workflow templates.
+- **Easy multi-stages** — declarative pipelines with explicit stage boundaries, inter-stage
+  artifacts, and fan-out / fan-in.
+- Runners: self-hosted first (container-based), with optional cloud burst.
+- Reuse: evaluate [act](https://github.com/nektos/act) / Gitea Actions for runner
+  compatibility.
+
+### 1.3 Static / SSG hosting (a GitHub Pages clone)
+- Publish static sites and SSG output (build → artifact → serve).
+- Branch/folder/tag binding, custom domains, HTTPS (Let's Encrypt).
+- `gh docs`-compatible UX.
+
+### 1.4 Snippets (a Gist clone)
+- Versioned snippets with fork and comments.
+- **`gh gist` CLI** compatibility plus a first-party CLI shim.
+- **Linking with repos/orgs** — a snippet can reference a repo/file/line and vice versa.
 
 ### 1.5 `gh` CLI shim
-- Drop-in обёртка над `gh`, перенаправляющая на HyperGit-бэкенд с тем же UX (`gh repo`, `gh pr`, `gh issue`, `gh gist`, `gh run`).
-- Деградация: если команда не реализована — прозрачно проксирует в настоящий GitHub.
+- A drop-in wrapper over `gh` that routes to the HyperGit backend with the same UX
+  (`gh repo`, `gh pr`, `gh issue`, `gh gist`, `gh run`).
+- Graceful degradation: unimplemented commands transparently proxy to real GitHub.
 
 ### 1.6 Issues (tasks)
-- Тикеты как first-class git-объекты (или закреплённое хранилище, синхронизированное с git).
-- **Интеграция с Linear** — двусторонняя синхронизация (см. Non-goals: Projects → Linear).
+- Issues as first-class git objects (or a store synchronized with git).
+- **Linear integration** — two-way sync (see Non-goals: Projects → Linear).
 
-### 1.7 Work logs (агентские JSONL-логи на коммитах)
-- Агенты крепят свои лог-сессии (JSONL) к коммитам/PR как trailer-метаданные или отдельный ref.
-- Логи таймлайн-привязаны к коммиту: что агент читал, что менял, какие tool-вызовы делал, сколько времени ушло.
-- UI: просмотр «истории работы» над файлом/коммитом/PR.
+### 1.7 Work logs (agent JSONL logs attached to commits)
+- Agents attach their work sessions (JSONL) to commits/PRs as trailer metadata or a
+  dedicated ref.
+- Logs are timeline-attached to a commit: what the agent read, what it changed, which tool
+  calls it made, how long it took.
+- UI: a "work history" view for a file/commit/PR.
 
-### 1.8 README + Wiki (Notion-подобный)
-- Редактор документов с блоками (заголовки, код, таблицы, embed, формулы, диаграммы) — Notion-like.
-- Wiki на репо/орг, двусторонняя связь с кодом (ссылки на символы/строки), live-превью.
-- Версионирование документов как git.
+### 1.8 README + Wiki (Notion-like)
+- A block-based document editor (headings, code, tables, embeds, formulas, diagrams).
+- Wiki per repo/org, two-way linked to code (references to symbols/lines), live preview.
+- Documents versioned as git.
 
-### 1.9 Live presence — «кто где и что редактирует»
-- **В IDE** — индикация в реальном времени, кто (и какой агент) сейчас редактирует файл/строку/символ.
-- **На уровне агентских хуков** — агент регистрирует свою активность через хуки; присутствие видно всем.
-- **Показывать агентов** наравне с людьми: аватар агента, статус (thinking/editing/idle), текущая задача.
-- Аналог: CRDT/Operational Transform для совместного присутствия + pub/sub.
+### 1.9 Live presence — "who is editing what, where"
+- **In the IDE** — real-time indication of who (and which agent) is editing a
+  file/line/symbol.
+- **At the agent-hook level** — an agent registers activity through hooks; presence is
+  visible to everyone.
+- **Show agents alongside humans**: agent avatar, status (thinking/editing/idle), current
+  task.
+- Implementation: CRDT/OT for collaborative presence plus a pub/sub layer.
 
 ### 1.10 GraphQL API + Webhooks
-- **GraphQL API** — основной программный интерфейс (как у GitHub).
-- **Webhooks** — события на все сущности с ретраями и dead-letter.
+- **GraphQL API** — the primary programmatic interface (as on GitHub).
+- **Webhooks** — events for every entity, with retries and a dead-letter queue.
 
-### 1.11 Pull Requests
-- Полноценные PR: diff, review, comments, approvals, checks, merge-стратегии.
-- Семантический diff (см. Mobile §2.2).
+### 1.11 Pull requests
+- Full PRs: diff, review, comments, approvals, checks, merge strategies.
+- Semantic diff (see Mobile §2.2).
 
-### 1.12 Smart Blame
-- **Быстрый и умный blame**: индекс поверх git-истории, мгновенный ответ на больших репо.
-- «Умный» — группировка, игнор форматирований/рефакторингов (semantic blame через tree-sitter), attribution к реальному изменению логики.
+### 1.12 Smart blame
+- **Fast and smart**: an index over git history with instant response on large repos.
+- **Smart** — grouping, ignoring formatting/refactors (semantic blame via tree-sitter),
+  attributing to the real logic change.
 
-### 1.13 URL-маппинги
-- Стабильные, человекочитаемые URL: `/org/repo/blob/sha/path#L12`, `/org/repo/-/tree/...`, permalinks на символ, deep-links в мобильное приложение.
-- Совместимость с привычными GitHub-маппингами + расширенные.
+### 1.13 URL mappings
+- Stable, human-readable URLs: `/org/repo/blob/sha/path#L12`, `/org/repo/-/tree/...`,
+  symbol permalinks, deep links into the mobile app.
+- Compatibility with familiar GitHub mappings plus extensions.
 
 ### 1.14 Smart search
-- **Fuzzy** + **инвертированный индекс** + **семантический (AI)** + **по символам** (LSP/tree-sitter).
-- Единый поиск по коду, тикетам, документам, PR, коммитам.
+- **Fuzzy** + **inverted index** + **semantic (AI)** + **by symbol** (LSP/tree-sitter).
+- A single search across code, issues, documents, PRs, and commits.
 
-### 1.15 Mobile-клиент (см. §2)
-Local-first приложение — первоклассный способ работы с платформой с телефона.
+### 1.15 Mobile client (see §2)
+The local-first app is the first-class way to use the platform from a phone.
 
 ---
 
-## 2. HyperGit Mobile — SwiftUI, local-first (ближайший конкретный объём)
+## 2. HyperGit Mobile — SwiftUI, local-first (the current concrete scope)
 
-> Это **MVP, который строим сейчас**. Остальное — долгосрочная визия (§3).
+> This is **the MVP being built now**.
 
-### 2.1 Цель MVP
-iOS-приложение на **SwiftUI**, которое работает поверх **GitHub API** (и позже — поверх собственного HyperGit API) и **Linear**, и позволяет **локально офлайн** смотреть:
-- репозитории, файловое дерево, содержимое файлов (с подсветкой);
-- pull requests (список, детали, diff, дискуссии, checks);
-- issues/tickets (из GitHub Issues и Linear);
-- коммиты, blame, историю.
+### 2.1 MVP goal
+A SwiftUI iOS app that runs against the **GitHub API** (and later the HyperGit API) and
+**Linear**, and allows **offline** browsing of:
+- repositories, file tree, file contents (with highlighting);
+- pull requests (list, details, diff, discussions, checks);
+- issues/tickets (from GitHub Issues and Linear);
+- commits, blame, history.
 
-Всё скачанное кешируется локально (local-first), синхронизация — фоновая/по запросу.
+Everything fetched is cached locally (local-first); sync is background or on demand.
 
-### 2.2 Фичи mobile
-- **Semantic diffs** — diff не по строкам, а по AST (добавленная/изменённая/перемещённая функция).
-- **AI: вопросы** — «объясни этот PR», «зачем этот код», «что поменялось между тегами» (LLM поверх локального контекста).
-- **Files: tree + gotos** — навигация по дереву, переход к символу, quick-open.
-- **Smart search** — fuzzy + индекс + AI + по символам (см. §1.14).
-- **GitHub support** — первоисточник №1 на MVP.
-- **Linear support** — выгрузка и офлайн-просмотр тикетов.
+### 2.2 Mobile features
+- **Semantic diffs** — diff by AST (added/changed/moved function) rather than by line.
+- **AI: questions** — "explain this PR", "why this code", "what changed between tags"
+  (an LLM over local context).
+- **Files: tree + go-tos** — tree navigation, go-to-symbol, quick-open.
+- **Smart search** — fuzzy + index + AI + by symbol (see §1.14).
+- **GitHub support** — source #1 for the MVP.
+- **Linear support** — download and offline-view tickets.
 
-### 2.3 Архитектура mobile (MVP)
+### 2.3 Mobile architecture (MVP)
 - SwiftUI + `async/await`, `@Observable` (Swift 6 concurrency, strict concurrency).
-- Слои: `App (Views)` → `ViewModels/Store` → `Services` → `Clients (GitHub/Linear REST+GraphQL)` → `Persistence (SwiftData/SQLite local cache)`.
-- Зависимости через протоколы (тестируемость, возможность подмены бэкенда GitHub→HyperGit).
-- Минимум сторонних зависимостей; предпочтение нативным фреймворкам.
+- Layers: `App (Views)` → `ViewModels/Store` → `Services` → `Clients (GitHub/Linear
+  REST+GraphQL)` → `Persistence (SwiftData/SQLite local cache)`.
+- Dependencies behind protocols (testability; the backend can be swapped GitHub → HyperGit).
+- Minimal third-party dependencies; prefer native frameworks.
 
-### 2.4 Поддержка нескольких бэкендов
-Абстракция `SourceRepository` позволяет читать из GitHub, позже — из собственного HyperGit, без переделки UI.
-
----
-
-## 3. HyperOS — долгосрочная визия собственной мобильной ОС
-
-> Долгий горизонт. Не ближний объём работ, но фиксируем направление.
-
-- **Project / Task / Document / People / Local / Agent first** — ОС, где эти сущности первоклассны на уровне системы, а не приложений.
-- **Widgets / Data sources / Integrations** — композиционный UI: виджеты тянут данные из любых источников.
-- **Auto installation** — приложения/интеграции ставятся и настраиваются сами по контексту/намерению.
-- **Local/remote data & logic auto-management** — прозрачное перемещение данных/вычислений между устройством и облаком/репо.
-- **Global history** — история всей ОС (как browser history, но для любых действий/документов/навигации), с поиском и откатом.
-- **Best camera, battery, water-proof** — аппаратные приоритеты целевого устройства.
-- **AirPlay, AirDrop** — нативная интеграция в экосистему Apple.
-- **Shared clipboard с macOS/Ubuntu** — бесшовный буфер обмена между устройствами.
-- **Open source** — начинаем с мобильного приложения (§2); ОС — по мере зрелости платформы HyperGit.
+### 2.4 Multiple backends
+A `RepositorySource` abstraction reads from GitHub today and from the HyperGit backend
+later, without reworking the UI.
 
 ---
 
-## 4. Non-goals (что НЕ делаем)
+## 3. Non-goals (what we do NOT build)
 
-- **Другие системы версий.** Только git. Mercurial/SVN/и т.п. — нет.
-- **Projects/доски.** Не строим свой project-management — используем **Linear**.
-- **Собственный code-server/IDE в браузере.** Это зона **hyperide** (отдельный продукт). HyperGit фокусируется на платформе git/CI/хостинг/UI-присутствия.
+- **Other version control systems.** Git only. No Mercurial/SVN/etc.
+- **Projects / boards.** We do not build project management — we use **Linear**.
+- **An in-browser code-server / IDE.** That is **hyperide**'s domain (a separate product).
+  HyperGit focuses on the platform (git / CI / hosting / presence UI).
 
 ---
 
-## 5. Архитектура и структура репозитория (монорепо)
+## 4. Architecture & repository layout (monorepo)
 
 ```
 HyperGit/
 ├── docs/
-│   └── SPEC.md                 # этот файл — мастерспека (authoritative)
-├── server/                     # git-сервер, API, CI, hosting, issues (бэкенд платформы)
-├── mobile/                     # SwiftUI iOS-приложение (MVP)
-├── ci/                         # gate-скрипты (rig-managed)
+│   └── SPEC.md                 # this file — master spec (authoritative)
+├── server/                     # git server, API, CI, hosting (platform backend)
+├── mobile/                     # SwiftUI iOS app (MVP)
+├── ci/                         # gate scripts (rig-managed)
 ├── .github/workflows/          # CI (rig-managed)
-├── rig.yaml                    # декларативная настройка репо (guardrails)
-└── AGENTS.md                   # конвенции для агентов
+├── rig.yaml                    # declarative repo guardrails
+└── AGENTS.md                   # conventions for agents
 ```
 
-Стек (предварительно):
-- **Backend**: язык/рантайм TBD (кандидаты при исследовании §6). REST + GraphQL.
-- **Mobile**: Swift 6 / SwiftUI / SwiftData. Минимум внешних зависимостей.
-- **Хранение git**: нативные bare-репозитории; индексы (blame/search) — поверх.
+Stack (preliminary):
+- **Backend**: language/runtime TBD (candidates evaluated in §5). REST + GraphQL.
+- **Mobile**: Swift 6 / SwiftUI / SwiftData. Minimal external dependencies.
+- **Git storage**: native bare repositories; indexes (blame/search) layered on top.
 
 ---
 
-## 6. Исследование open-source альтернатив
+## 5. Open-source alternatives research
 
-Прежде чем строить бэкенд с нуля — изучить и по возможности форкнуть/переиспользовать.
+Before building the backend from scratch, study and where possible fork/reuse.
 
-| Проект | Что это | Релевантность | Заметки |
+| Project | What it is | Relevance | Notes |
 |---|---|---|---|
-| **Gitea** | лёгкий self-hosted git-сервер (Go), issues, PR, Actions | Высокая | Зрелый, Actions-совместим, активный. Кандидат №1 на заимствование/форк. |
-| **Forgejo** | community fork of Gitea (soft-fork), NON-profit | Высокая | Форк Gitea под независимым управлением; совместимость. |
-| **Gogs** | прародитель Gitea (Go), проще/легче | Средняя | Менее активен; Gitea/Forgejo предпочтительнее. |
-| **Codeberg** (хостинг на Forgejo) | референс-инстанс | Низкая | Не код, а пример эксплуатации Forgejo. |
-| **GitLab CE** | тяжёлый all-in-one (Ruby/Go) | Низкая | Слишком тяжёл, не вписывается в принципы. |
-| **radicle** | p2p git (без центрального сервера) | Средняя (идеи) | Интересна local-first/p2p-философия; модель differs. |
-| **OneDev** | git-сервер + CI (Java) | Средняя | Встроенный CI, но стек Java. |
-| **sourcehut** | набор простых git-сервисов (Go) | Средняя (идеи) | «Простота» близка нашим принципам; нет монолита. |
-| **act** | локальный запуск GitHub Actions | Высокая (CI) | Раннер-совместимость Actions. |
-| **tree-sitter** | парсинг для semantic diff/blame/search | Высокая (smart-фичи) | Основа semantic diff, smart blame, symbol search. |
+| **Gitea** | lightweight self-hosted git server (Go), issues, PR, Actions | High | Mature, Actions-compatible, active. Candidate #1 to fork/reuse. |
+| **Forgejo** | community fork of Gitea, non-profit | High | Gitea-compatible under independent governance. |
+| **Gogs** | predecessor of Gitea (Go), simpler/lighter | Medium | Less active; Gitea/Forgejo preferred. |
+| **Codeberg** (Forgejo hosting) | reference instance | Low | Example deployment, not code. |
+| **GitLab CE** | heavy all-in-one (Ruby/Go) | Low | Too heavy; does not fit the principles. |
+| **radicle** | p2p git (no central server) | Medium (ideas) | Interesting local-first/p2p philosophy; different model. |
+| **OneDev** | git server + CI (Java) | Medium | Built-in CI, but Java stack. |
+| **sourcehut** | set of simple git services (Go) | Medium (ideas) | Simplicity aligns with our principles; no monolith. |
+| **act** | local GitHub Actions runner | High (CI) | Actions runner compatibility. |
+| **tree-sitter** | parsing for semantic diff/blame/search | High (smart features) | Foundation for semantic diff, smart blame, symbol search. |
 
-**Решение (предварительное):** бэкенд — форк/переиспользование **Forgejo/Gitea** (Go, Actions-совместимость, зрелость) + надстройки HyperGit (work-logs, live-presence, smart search/blame, mobile API). Финализируется отдельным issue-исследованием.
+**Provisional decision:** the backend forks/reuses **Forgejo/Gitea** (Go,
+Actions-compatible, mature) plus HyperGit-specific extensions (work-logs, live presence,
+smart search/blame, mobile API). Finalized by a dedicated research issue.
 
 ---
 
-## 7. Roadmap (фазы)
+## 6. Roadmap (phases)
 
-### Фаза 0 — Bootstrap (текущая)
-- [x] Репо `hyperide/HyperGit` создан.
-- [x] Мастерспека `docs/SPEC.md`.
-- [ ] AGENTS.md конвенции.
-- [ ] CI/guardrails активны (rig).
-- [ ] Задачи в GitHub Issues.
+### Phase 0 — Bootstrap (done)
+- [x] Repo `hyperide/HyperGit` created.
+- [x] Master spec `docs/SPEC.md`.
+- [x] `AGENTS.md` conventions.
+- [x] CI / guardrails active (rig).
+- [x] Tasks in GitHub Issues.
 
-### Фаза 1 — Mobile MVP (следующая, конкретный объём)
-- [ ] SwiftUI-каркас приложения.
-- [ ] GitHub API клиент (auth, репо, дерево, файлы, PR, issues, коммиты).
-- [ ] Linear клиент (тикеты).
-- [ ] Local-first кеш (офлайн-доступ).
-- [ ] UI: репо-список, файловое дерево, просмотр файла, PR-список/детали/дифф, тикеты.
-- [ ] Билдится и запускается на симуляторе.
+### Phase 1 — Mobile MVP (in progress)
+- [x] SwiftUI app scaffold.
+- [x] GitHub API client (auth, repos, tree, files, PRs, issues, commits, pagination).
+- [ ] Linear client (tickets) — #3.
+- [ ] Local-first cache (SwiftData) — #4.
+- [ ] UI screens (repo list, file tree, file viewer, PR, issues, tickets) — #5.
 
-### Фаза 2 — Smart-фичи mobile
+### Phase 2 — Mobile smart features
 - [ ] Semantic diff (tree-sitter).
-- [ ] AI-вопросы (LLM).
-- [ ] Smart search (fuzzy + индекс + символы).
+- [ ] AI questions (LLM).
+- [ ] Smart search (fuzzy + index + symbols).
 - [ ] Smart blame.
 
-### Фаза 3 — Платформа HyperGit (бэкенд)
-- [ ] Решение по бэкенду (Forgejo/Gitea fork vs своё).
+### Phase 3 — HyperGit platform (backend)
+- [ ] Backend decision (Forgejo/Gitea fork vs custom) — #6.
 - [ ] GraphQL API + webhooks.
-- [ ] CI/CD (Actions-совместимый).
-- [ ] Static hosting, snippets, gist-shim, gh-shim.
-- [ ] Work-logs агентов.
-- [ ] Live-presence (IDE + хуки).
-
-### Фаза 4 — HyperOS
-- Долгосрочная эволюция mobile → ОС (по мере зрелости).
+- [ ] CI/CD (Actions-compatible).
+- [ ] Static hosting, snippets, gist shim, gh shim.
+- [ ] Agent work-logs.
+- [ ] Live presence (IDE + hooks).
 
 ---
 
-## 8. Конвенции
+## 7. Conventions
 
-- **Коммиты:** Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`), атомарные, часто.
-- **Ветви:** feature-ветки → PR (squash-merge). `main` — всегда зелёный.
-- **Спека:** обновляется в том же PR, что меняет поведение.
-- **Задачи:** GitHub Issues в этом репо (через `task` CLI).
-- **Агенты:** читают `AGENTS.md`; крепят work-логи к коммитам (когда механизм готов).
+- **Commits:** Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`), atomic, often.
+- **Branches:** feature branch → PR (squash-merge). `main` stays green; CI gates are not
+  bypassed.
+- **Spec:** updated in the same PR that changes behavior.
+- **Tasks:** GitHub Issues in this repo (via the `task` CLI).
+- **Agents:** read `AGENTS.md`; attach work-logs to commits (once the mechanism exists).
+- **Language:** English-only for all documentation, issues, and PRs.
 
 ---
 
-## 9. Открытые вопросы
+## 8. Open questions
 
-- Язык/стек бэкенда и степень заимствования из Forgejo/Gitea (issue-исследование).
-- Модель хранения agent work-logs (git ref vs объект vs отдельное хранилище).
-- Протокол live-presence (CRDT vs OT vs простой pub/sub) и интеграция с IDE.
-- Linear: двусторонняя синхронизация vs read-only на MVP.
-- Линзинг лицензий при форке open-source (Forgejo: MIT).
+- Backend language/stack and the degree of reuse from Forgejo/Gitea (research issue #6).
+- Storage model for agent work-logs (git ref vs object vs dedicated store).
+- Live-presence protocol (CRDT vs OT vs simple pub/sub) and IDE integration.
+- Linear: two-way sync vs read-only for the MVP.
+- License compliance when forking open-source (Forgejo: MIT).

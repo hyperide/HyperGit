@@ -8,7 +8,7 @@ reads the same guide.
 
 Open-source GitHub replacement (git server, CI/CD, hosting, snippets, issues, agent
 work-logs, live-presence, GraphQL, PR, smart blame) **plus** a local-first SwiftUI
-mobile app (GitHub + Linear offline viewer → evolving toward an agent-centric mobile OS).
+mobile app (offline viewer for GitHub + Linear).
 
 **The spec is authoritative:** read `docs/SPEC.md` before touching any feature. If code
 and spec disagree, the disagreement is the finding. Update the spec in the same PR that
