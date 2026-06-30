@@ -13,9 +13,9 @@ struct HyperGitApp: App {
     init() {
         let tokens = KeychainTokenStore()
 
-        // Initialize OAuth services
-        let githubOAuth = OAuthService(provider: .github, config: OAuthConfig.github, tokenStore: tokens)
-        let linearOAuth = OAuthService(provider: .linear, config: OAuthConfig.linear, tokenStore: tokens)
+        // Initialize OAuth services with config from environment/Config.plist
+        let githubOAuth = OAuthService(provider: .github, config: OAuthConfig.githubWithConfig, tokenStore: tokens)
+        let linearOAuth = OAuthService(provider: .linear, config: OAuthConfig.linearWithConfig, tokenStore: tokens)
 
         // Build clients with tokenStore for OAuth support
         let github = GitHubClient(tokenProvider: { tokens.token(for: .github) }, tokenStore: tokens)
