@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "haft": {
+      "command": [
+        ".haft/bin/serve-haft"
+      ],
+      "enabled": false,
+      "type": "local"
+    }
+  }
+}

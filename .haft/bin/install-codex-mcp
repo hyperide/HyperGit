@@ -1,0 +1,61 @@
+#!/usr/bin/env sh
+set -eu
+
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
+server_name="${CODEX_HAFT_SERVER_NAME:-haft-gitapp}"
+install_root="${CODEX_HAFT_INSTALL_ROOT:-$HOME/.local/share/hypergit/haft-mcp}"
+
+case "$server_name" in
+  [A-Za-z0-9]*)
+    ;;
+  *)
+    echo "CODEX_HAFT_SERVER_NAME must be a non-empty safe slug" >&2
+    exit 1
+    ;;
+esac
+case "$server_name" in
+  *..*|*[!A-Za-z0-9._-]*)
+    echo "CODEX_HAFT_SERVER_NAME must be a non-empty safe slug" >&2
+    exit 1
+    ;;
+esac
+
+quote_shell() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
+install_dir="$install_root/$server_name"
+wrapper="$install_dir/serve-haft"
+tmp="${wrapper}.tmp.$$"
+
+mkdir -p "$install_dir"
+trap 'rm -f "$tmp"' EXIT HUP INT TERM
+
+root_literal="$(quote_shell "$root")"
+{
+  printf '%s\n' '#!/usr/bin/env sh'
+  printf '%s\n' 'set -eu'
+  printf '\n'
+  printf 'root=%s\n' "$root_literal"
+  printf '%s\n' "cd \"\$root\""
+  printf '\n'
+  printf '%s\n' "if [ -n \"\${HAFT_DB_PATH:-}\" ]; then"
+  printf '%s\n' '  echo "HAFT_DB_PATH is not supported by this wrapper; unset it to avoid split Haft state" >&2'
+  printf '%s\n' '  exit 1'
+  printf '%s\n' 'fi'
+  printf '\n'
+  printf '%s\n' "export HAFT_PROJECT_ROOT=\"\$root\""
+  printf '%s\n' 'exec haft serve'
+} >"$tmp"
+chmod 755 "$tmp"
+mv "$tmp" "$wrapper"
+trap - EXIT HUP INT TERM
+
+if ! codex mcp add "$server_name" -- "$wrapper"; then
+  echo "Failed to register Codex MCP server: $server_name" >&2
+  exit 1
+fi
+printf 'Installed %s Codex MCP wrapper at %s\n' "$server_name" "$wrapper"

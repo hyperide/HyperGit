@@ -1,0 +1,15 @@
+#!/usr/bin/env sh
+set -eu
+
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
+
+cd "$root"
+
+if [ -n "${HAFT_DB_PATH:-}" ]; then
+  echo "HAFT_DB_PATH is not supported by this wrapper; unset it to avoid split Haft state" >&2
+  exit 1
+fi
+
+export HAFT_PROJECT_ROOT="$root"
+exec haft serve
