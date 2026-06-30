@@ -32,6 +32,54 @@ public struct OAuthTokens: Sendable, Equatable, Codable {
         guard let expiresAt else { return false }
         return Date() >= expiresAt.addingTimeInterval(-60) // 60s buffer
     }
+
+    public var canRefresh: Bool {
+        refreshToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    func preservingRefreshToken(_ fallback: String) -> OAuthTokens {
+        OAuthTokens(
+            accessToken: accessToken,
+            refreshToken: refreshToken ?? fallback,
+            expiresAt: expiresAt,
+            scope: scope,
+            tokenType: tokenType
+        )
+    }
+}
+
+public typealias AccessTokenProvider = @Sendable () async throws -> String?
+
+public enum AuthTokenSelection {
+    public static func preferred(manual: String?, oauth: OAuthTokens?) -> String? {
+        if let manual = manualToken(manual) {
+            return manual
+        }
+        return accessToken(oauth)
+    }
+
+    public static func hasCredential(manual: String?, oauth: OAuthTokens?, canRefreshOAuth: Bool = false) -> Bool {
+        if manualToken(manual) != nil {
+            return true
+        }
+        return accessToken(oauth) != nil || (canRefreshOAuth && oauth?.canRefresh == true)
+    }
+
+    public static func hasStoredCredential(manual: String?, oauth: OAuthTokens?) -> Bool {
+        manualToken(manual) != nil || oauth != nil
+    }
+
+    public static func manualToken(_ manual: String?) -> String? {
+        guard let manual = manual?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !manual.isEmpty else { return nil }
+        return manual
+    }
+
+    public static func accessToken(_ oauth: OAuthTokens?) -> String? {
+        guard let oauth, !oauth.isExpired else { return nil }
+        let accessToken = oauth.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        return accessToken.isEmpty ? nil : accessToken
+    }
 }
 
 public protocol TokenStore: Sendable {

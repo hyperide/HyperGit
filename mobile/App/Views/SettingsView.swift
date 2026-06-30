@@ -6,10 +6,14 @@ import HyperGitCore
 struct SettingsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.tokenStore) private var tokenStore
+    @Environment(\.githubOAuthService) private var githubOAuth
+    @Environment(\.linearOAuthService) private var linearOAuth
     @State private var githubToken = ""
     @State private var linearKey = ""
     @State private var githubValid = false
     @State private var linearValid = false
+    @State private var authenticatingProvider: OAuthProvider?
+    @State private var authMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -40,6 +44,17 @@ struct SettingsView: View {
                 .textInputAutocapitalization(.never)
 #endif
 
+            Button {
+                authenticate(githubOAuth, provider: .github)
+            } label: {
+                if authenticatingProvider == .github {
+                    ProgressView()
+                } else {
+                    Label("Sign in with GitHub", systemImage: "person.crop.circle.badge.checkmark")
+                }
+            }
+            .disabled(authenticatingProvider != nil || !canAuthenticate(githubOAuth))
+
             validationBadge(githubValid, text: githubValid ? "Valid token format" : "Enter a classic PAT with repo scope")
 
             VStack(alignment: .leading, spacing: 6) {
@@ -64,6 +79,17 @@ struct SettingsView: View {
 #if os(iOS)
                 .textInputAutocapitalization(.never)
 #endif
+
+            Button {
+                authenticate(linearOAuth, provider: .linear)
+            } label: {
+                if authenticatingProvider == .linear {
+                    ProgressView()
+                } else {
+                    Label("Sign in with Linear", systemImage: "person.crop.circle.badge.checkmark")
+                }
+            }
+            .disabled(authenticatingProvider != nil || !canAuthenticate(linearOAuth))
 
             validationBadge(linearValid, text: linearValid ? "Valid key format" : "Enter a Linear API key")
 
@@ -91,6 +117,11 @@ struct SettingsView: View {
             }
             Text("Repos: \(store.repositories.count) · Tickets: \(store.tickets.count)")
                 .font(.footnote).foregroundStyle(.secondary)
+            if let authMessage {
+                Text(authMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         } header: { Text("Data") }
     }
 
@@ -107,11 +138,29 @@ struct SettingsView: View {
     }
 
     private func validateGitHub(_ token: String) {
-        githubValid = !token.isEmpty && (token.hasPrefix("ghp_") || token.hasPrefix("github_pat_"))
+        let manual = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !manual.isEmpty {
+            githubValid = manual.hasPrefix("ghp_") || manual.hasPrefix("github_pat_")
+        } else {
+            githubValid = AuthTokenSelection.hasCredential(
+                manual: nil,
+                oauth: tokenStore.oauthTokens(for: .github),
+                canRefreshOAuth: canAuthenticate(githubOAuth)
+            )
+        }
     }
 
     private func validateLinear(_ key: String) {
-        linearValid = !key.isEmpty && key.count >= 20
+        let manual = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !manual.isEmpty {
+            linearValid = manual.count >= 20
+        } else {
+            linearValid = AuthTokenSelection.hasCredential(
+                manual: nil,
+                oauth: tokenStore.oauthTokens(for: .linear),
+                canRefreshOAuth: canAuthenticate(linearOAuth)
+            )
+        }
     }
 
     private func seed() {
@@ -120,8 +169,67 @@ struct SettingsView: View {
         validateGitHub(githubToken)
         validateLinear(linearKey)
     }
+
+    private func canAuthenticate(_ service: OAuthService?) -> Bool {
+        guard let service else { return false }
+        return !service.config.clientId.isEmpty && !service.config.clientSecret.isEmpty
+    }
+
+    private func authenticate(_ service: OAuthService?, provider: OAuthProvider) {
+        guard authenticatingProvider == nil else {
+            authMessage = "Another sign-in is already in progress."
+            return
+        }
+        guard let service else {
+            authMessage = "OAuth service is not available."
+            return
+        }
+        Task { @MainActor in
+            authenticatingProvider = provider
+            defer { authenticatingProvider = nil }
+            do {
+                _ = try await service.authenticate()
+                clearManualCredential(for: provider)
+                seed()
+                authMessage = "\(provider.displayName) connected."
+                if provider == .github {
+                    await store.loadRepositories()
+                } else {
+                    await store.loadTickets()
+                }
+            } catch OAuthError.invalidConfiguration {
+                authMessage = "\(provider.displayName) OAuth is not configured. Use a token instead."
+            } catch OAuthError.userCancelled {
+                authMessage = "\(provider.displayName) sign-in cancelled."
+            } catch OAuthError.authenticationInProgress {
+                authMessage = "\(provider.displayName) sign-in is already in progress."
+            } catch {
+                authMessage = "\(provider.displayName) sign-in failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func clearManualCredential(for provider: OAuthProvider) {
+        switch provider {
+        case .github:
+            githubToken = ""
+            try? tokenStore.setToken(nil, for: .github)
+        case .linear:
+            linearKey = ""
+            try? tokenStore.setToken(nil, for: .linear)
+        }
+    }
 }
 
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+private extension OAuthProvider {
+    var displayName: String {
+        switch self {
+        case .github: return "GitHub"
+        case .linear: return "Linear"
+        }
+    }
 }

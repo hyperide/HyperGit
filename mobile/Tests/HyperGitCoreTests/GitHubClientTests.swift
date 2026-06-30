@@ -193,6 +193,68 @@ struct GitHubClientTests {
         #expect(repos.map(\.name).sorted() == ["a", "b"])
     }
 
+    @Test("expired OAuth token uses async refresh provider")
+    func expiredOAuthUsesRefreshProvider() async throws {
+        let host = "refresh.github.test"
+        gitHubAuthorizationRecorder.reset(host: host)
+        let tokenStore = InMemoryTokenStore()
+        try tokenStore.setOAuthTokens(
+            OAuthTokens(
+                accessToken: "expired-oauth-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 0)
+            ),
+            for: .github
+        )
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [GitHubAuthorizationURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = GitHubClient(
+            baseURL: URL(string: "https://\(host)")!,
+            tokenProvider: { nil },
+            oauthAccessTokenProvider: { "refreshed-github-token" },
+            session: session,
+            tokenStore: tokenStore
+        )
+
+        _ = try await client.repositories()
+
+        let authorizations = gitHubAuthorizationRecorder.authorizations(host: host)
+        #expect(authorizations == ["Bearer refreshed-github-token"])
+    }
+
+    @Test("manual PAT takes precedence over refreshable OAuth token")
+    func manualPATPrecedenceOverRefreshableOAuth() async throws {
+        let host = "manual.github.test"
+        gitHubAuthorizationRecorder.reset(host: host)
+        let tokenStore = InMemoryTokenStore()
+        try tokenStore.setOAuthTokens(
+            OAuthTokens(
+                accessToken: "expired-oauth-token",
+                refreshToken: "refresh-token",
+                expiresAt: Date(timeIntervalSince1970: 0)
+            ),
+            for: .github
+        )
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [GitHubAuthorizationURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = GitHubClient(
+            baseURL: URL(string: "https://\(host)")!,
+            tokenProvider: { "manual-github-token" },
+            oauthAccessTokenProvider: { "refreshed-github-token" },
+            session: session,
+            tokenStore: tokenStore
+        )
+
+        _ = try await client.repositories()
+
+        let authorizations = gitHubAuthorizationRecorder.authorizations(host: host)
+        #expect(authorizations == ["Bearer manual-github-token"])
+    }
+
     @Test("transport errors propagate (e.g. 401 → unauthorized)")
     func errorPropagation() async {
         let c = GitHubClient(tokenProvider: { "t" }, transport: { _, _ in throw HTTPError.unauthorized })
@@ -200,4 +262,67 @@ struct GitHubClientTests {
         do { _ = try await c.repositories() } catch { caught = error }
         #expect((caught as? HTTPError) == .unauthorized)
     }
+}
+
+private let gitHubAuthorizationRecorder = GitHubAuthorizationRecorder()
+
+private final class GitHubAuthorizationRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: [String?]] = [:]
+
+    func reset(host: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        values[host] = []
+    }
+
+    func record(_ authorization: String?, host: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        values[host, default: []].append(authorization)
+    }
+
+    func authorizations(host: String) -> [String?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return values[host] ?? []
+    }
+}
+
+private final class GitHubAuthorizationURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        let authorization = request.value(forHTTPHeaderField: "Authorization")
+        let host = request.url?.host ?? ""
+        gitHubAuthorizationRecorder.record(authorization, host: host)
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: [:]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.repositoriesData)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    private static let repositoriesData = Data(#"""
+    [{
+      "id": 1, "name": "a", "full_name": "o/a",
+      "owner": {"id": 1, "login": "o", "name": null, "avatar_url": null, "html_url": null},
+      "description": null, "private": false, "default_branch": "main",
+      "stargazers_count": 0, "forks_count": 0, "open_issues_count": 0,
+      "updated_at": null, "ssh_url": null, "clone_url": null,
+      "html_url": null, "language": null
+    }]
+    """#.utf8)
 }

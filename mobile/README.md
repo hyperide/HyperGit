@@ -42,6 +42,8 @@ xcodebuild -scheme HyperGit -destination 'generic/platform=iOS Simulator' build
 
 1. Open Settings in the app.
 2. Paste a **GitHub** classic PAT (`repo` scope) and/or a **Linear** personal API key.
+   OAuth sign-in remains disabled unless a safe public/brokered flow is configured;
+   client secrets must not be bundled in the app.
 3. Pull to refresh on Repos / Tickets. Everything fetched is cached locally and
    available offline.
 
