@@ -1,6 +1,6 @@
 // LinearClient — TicketSource over the Linear GraphQL API (read-only on MVP).
-// Token is a personal API key (Linear → Settings → API → Personal API keys).
-// Two-way sync is an open question (SPEC §9). SPEC §2.2.
+// Supports both Personal API keys and OAuth 2.0 tokens. Two-way sync is an open
+// question (SPEC §9). SPEC §2.2.
 import Foundation
 
 public struct LinearClient: TicketSource {
@@ -9,19 +9,36 @@ public struct LinearClient: TicketSource {
     public let endpoint: URL
     public let tokenProvider: @Sendable () -> String?
     public let session: URLSession
+    private let tokenStore: (any TokenStore)?
 
     public init(
         endpoint: URL = URL(string: "https://api.linear.app/graphql")!,
         tokenProvider: @escaping @Sendable () -> String?,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        tokenStore: (any TokenStore)? = nil
     ) {
         self.endpoint = endpoint
         self.tokenProvider = tokenProvider
         self.session = session
+        self.tokenStore = tokenStore
     }
 
     public func tickets() async throws -> [HGTicket] {
-        guard tokenProvider() != nil else { throw HTTPError.unauthorized }
+        // Try OAuth token first, fallback to API key
+        let token: String?
+        if let store = tokenStore,
+           let oauth = store.oauthTokens(for: .linear) {
+            let accessToken = oauth.accessToken
+            if !accessToken.isEmpty {
+                token = accessToken
+            } else {
+                token = tokenProvider()
+            }
+        } else {
+            token = tokenProvider()
+        }
+
+        guard let token else { throw HTTPError.unauthorized }
 
         let payload = try JSONSerialization.data(withJSONObject: [
             "query": Self.ticketsQuery,
@@ -31,7 +48,7 @@ public struct LinearClient: TicketSource {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("HyperGitMobile/0.1", forHTTPHeaderField: "User-Agent")
-        req.setValue(tokenProvider()!, forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.httpBody = payload
 
         let (data, resp): (Data, URLResponse)
@@ -64,7 +81,7 @@ public struct LinearClient: TicketSource {
     }
     """
 
-    // MARK: GraphQL response shapes
+    // MARK: - GraphQL response shapes
 
     struct GraphQLResponse: Decodable { let data: DataRoot }
     struct DataRoot: Decodable { let issues: IssuesConnection }

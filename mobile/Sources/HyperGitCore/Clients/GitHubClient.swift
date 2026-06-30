@@ -7,6 +7,7 @@ public struct GitHubClient: RepositorySource, TicketSource {
     public let baseURL: URL
     public let transport: HTTPTransport
     public let tokenProvider: @Sendable () -> String?
+    private let tokenStore: (any TokenStore)?
 
     public var displayName: String { "GitHub" }
 
@@ -14,17 +15,40 @@ public struct GitHubClient: RepositorySource, TicketSource {
         baseURL: URL = URL(string: "https://api.github.com")!,
         tokenProvider: @escaping @Sendable () -> String?,
         transport: HTTPTransport? = nil,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        tokenStore: (any TokenStore)? = nil
     ) {
         self.baseURL = baseURL
         self.tokenProvider = tokenProvider
+        self.tokenStore = tokenStore
         self.transport = transport ?? HTTPClient.transport(
             baseURL: baseURL,
-            tokenProvider: tokenProvider,
+            tokenProvider: { [tokenStore] in
+                // Try OAuth token first
+                if let store = tokenStore,
+                   let oauth = store.oauthTokens(for: .github) {
+                    let accessToken = oauth.accessToken
+                    if !accessToken.isEmpty {
+                        return accessToken
+                    }
+                }
+                // Fallback to PAT
+                return tokenProvider()
+            },
             defaultHeaders: ["X-GitHub-Api-Version": "2022-11-28",
                              "Accept": "application/vnd.github+json"],
             session: session
         )
+    }
+
+    // Convenience init for backward compatibility
+    public init(
+        baseURL: URL = URL(string: "https://api.github.com")!,
+        tokenProvider: @escaping @Sendable () -> String?,
+        transport: HTTPTransport? = nil,
+        session: URLSession = .shared
+    ) {
+        self.init(baseURL: baseURL, tokenProvider: tokenProvider, transport: transport, session: session, tokenStore: nil)
     }
 
     // MARK: RepositorySource

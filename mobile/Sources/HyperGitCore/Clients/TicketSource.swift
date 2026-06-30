@@ -6,3 +6,11 @@ public protocol TicketSource: Sendable {
     var displayName: String { get }
     func tickets() async throws -> [HGTicket]
 }
+
+/// Canned ticket feed for previews, tests and demo mode.
+public struct PreviewTicketSource: TicketSource {
+    public var displayName: String { "Preview" }
+    public let items: [HGTicket]
+    public init(items: [HGTicket] = HGTicket.samples) { self.items = items }
+    public func tickets() async throws -> [HGTicket] { items }
+}

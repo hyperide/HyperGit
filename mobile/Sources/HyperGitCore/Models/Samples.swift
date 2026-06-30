@@ -28,3 +28,17 @@ extension HGPullRequest {
                       htmlURL: URL(string: "https://github.com/hyperide/HyperGit/pull/1")),
     ]
 }
+
+extension HGTicket {
+    public static let samples: [HGTicket] = [
+        HGTicket(id: "gh-1", source: .github, identifier: "#1",
+                 title: "Mobile MVP: SwiftUI app scaffold", stateName: "open", team: nil,
+                 assignee: nil, labels: ["area/mobile", "phase/1"], url: nil,
+                 updatedAt: Date(timeIntervalSinceNow: -3600)),
+        HGTicket(id: "lin-ENG-42", source: .linear, identifier: "ENG-42",
+                 title: "Offline cache for repositories", stateName: "In Progress",
+                 team: "Engineering",
+                 assignee: HGUser(id: 7, login: "agent", name: "HyperGit Agent", avatarURL: nil, htmlURL: nil),
+                 labels: ["mobile"], url: nil, updatedAt: Date(timeIntervalSinceNow: -7200)),
+    ]
+}
