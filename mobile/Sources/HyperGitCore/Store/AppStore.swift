@@ -34,6 +34,16 @@ public final class AppStore {
     public var issuesState: LoadState = .idle
     public var ticketsState: LoadState = .idle
 
+    /// Non-nil while the corresponding list is showing cache fallback data rather than
+    /// a fresh fetch (i.e. the last network attempt failed but the cache had something
+    /// to show). Kept separate from `LoadState` — which already collapses to `.loaded`
+    /// on a successful cache fallback — so the UI can render a distinct "stale" banner
+    /// without conflating "no data" (`.error`) with "old data" (`.loaded` + stale reason).
+    public var reposStaleReason: String?
+    public var prsStaleReason: String?
+    public var issuesStaleReason: String?
+    public var ticketsStaleReason: String?
+
     public let repoSource: RepositorySource
     public let ticketSources: [TicketSource]
     public let cache: CacheStore
@@ -57,11 +67,13 @@ public final class AppStore {
             await cache.setRepositories(fetched)
             repositories = fetched
             reposState = .loaded
+            reposStaleReason = nil
         } catch {
             // Local-first fallback: show cache when the network fails.
             let cached = await cache.repositories()
             repositories = cached
             reposState = cached.isEmpty ? .error(message(error)) : .loaded
+            reposStaleReason = cached.isEmpty ? nil : message(error)
         }
     }
 
@@ -77,12 +89,15 @@ public final class AppStore {
 
     public func loadFileTree(branch: String? = nil) async {
         guard let repo = selectedRepo else { return }
+        // "HEAD" is a cache-key sentinel for "no explicit branch and no known default" —
+        // distinct from any real branch name, so it can't collide with one.
+        let resolvedBranch = branch ?? repo.defaultBranch ?? "HEAD"
         do {
             let tree = try await repoSource.fileTree(owner: repo.ownerLogin, repo: repo.name, branch: branch ?? repo.defaultBranch)
-            await cache.setFileTree(tree, owner: repo.ownerLogin, repo: repo.name)
+            await cache.setFileTree(tree, owner: repo.ownerLogin, repo: repo.name, branch: resolvedBranch)
             fileTree = tree
         } catch {
-            fileTree = await cache.fileTree(owner: repo.ownerLogin, repo: repo.name)
+            fileTree = await cache.fileTree(owner: repo.ownerLogin, repo: repo.name, branch: resolvedBranch)
         }
     }
 
@@ -100,12 +115,14 @@ public final class AppStore {
         prsState = .loading
         do {
             let prs = try await repoSource.pullRequests(owner: repo.ownerLogin, repo: repo.name, state: state)
-            await cache.setPullRequests(prs, owner: repo.ownerLogin, repo: repo.name)
+            await cache.setPullRequests(prs, owner: repo.ownerLogin, repo: repo.name, state: state)
             pullRequests = prs
             prsState = .loaded
+            prsStaleReason = nil
         } catch {
-            pullRequests = await cache.pullRequests(owner: repo.ownerLogin, repo: repo.name)
+            pullRequests = await cache.pullRequests(owner: repo.ownerLogin, repo: repo.name, state: state)
             prsState = pullRequests.isEmpty ? .error(message(error)) : .loaded
+            prsStaleReason = pullRequests.isEmpty ? nil : message(error)
         }
     }
 
@@ -114,12 +131,14 @@ public final class AppStore {
         issuesState = .loading
         do {
             let list = try await repoSource.issues(owner: repo.ownerLogin, repo: repo.name, state: state)
-            await cache.setIssues(list, owner: repo.ownerLogin, repo: repo.name)
+            await cache.setIssues(list, owner: repo.ownerLogin, repo: repo.name, state: state)
             issues = list
             issuesState = .loaded
+            issuesStaleReason = nil
         } catch {
-            issues = await cache.issues(owner: repo.ownerLogin, repo: repo.name)
+            issues = await cache.issues(owner: repo.ownerLogin, repo: repo.name, state: state)
             issuesState = issues.isEmpty ? .error(message(error)) : .loaded
+            issuesStaleReason = issues.isEmpty ? nil : message(error)
         }
     }
 
@@ -135,34 +154,18 @@ public final class AppStore {
     // MARK: Unified tickets (Linear + GitHub)
 
     public func loadTickets() async {
-        guard !ticketSources.isEmpty else { ticketsState = .loaded; return }
+        guard !ticketSources.isEmpty else { ticketsState = .loaded; ticketsStaleReason = nil; return }
         ticketsState = .loading
         var collected: [HGTicket] = []
         var failures: [String] = []
         var authFailures: [String] = []
+        var usedStaleFallback = false
         for source in ticketSources {
-            do {
-                let list = try await source.tickets()
-                await cache.setTickets(list, source: source.displayName)
-                collected.append(contentsOf: list)
-            } catch let partial as any PartialTicketResultsError {
-                let list = partial.partialTickets
-                let cached = await cache.tickets(source: source.displayName)
-                if !list.isEmpty {
-                    let merged = mergeTickets(fresh: list, cached: cached)
-                    await cache.setTickets(merged, source: source.displayName)
-                    collected.append(contentsOf: merged)
-                } else {
-                    collected.append(contentsOf: cached)
-                }
-                failures.append(partial.partialTicketsMessage)
-            } catch {
-                collected.append(contentsOf: await cache.tickets(source: source.displayName))
-                if (error as? HTTPError) == .unauthorized {
-                    authFailures.append(message(error))
-                } else {
-                    failures.append(message(error))
-                }
+            let outcome = await fetchTickets(from: source)
+            collected.append(contentsOf: outcome.tickets)
+            usedStaleFallback = usedStaleFallback || outcome.usedCachedFallback
+            if let failureMessage = outcome.failureMessage {
+                if outcome.isAuthFailure { authFailures.append(failureMessage) } else { failures.append(failureMessage) }
             }
         }
         tickets = collected.sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
@@ -170,6 +173,46 @@ public final class AppStore {
             failures = authFailures
         }
         ticketsState = failures.isEmpty ? .loaded : .error(failures.joined(separator: " "))
+        // Only surface staleness when the state itself still reads as a clean success —
+        // `.error` (a partial-pagination page or a hard failure) already communicates
+        // degradation, so `.loaded` + a stale reason at the same time would be a
+        // contradictory double-signal for the same underlying event.
+        ticketsStaleReason = (ticketsState == .loaded && usedStaleFallback)
+            ? "Some tickets may be from an earlier sync."
+            : nil
+    }
+
+    private struct TicketSourceOutcome {
+        let tickets: [HGTicket]
+        let usedCachedFallback: Bool
+        let failureMessage: String?
+        let isAuthFailure: Bool
+    }
+
+    private func fetchTickets(from source: TicketSource) async -> TicketSourceOutcome {
+        do {
+            let list = try await source.tickets()
+            await cache.setTickets(list, source: source.displayName)
+            return TicketSourceOutcome(tickets: list, usedCachedFallback: false, failureMessage: nil, isAuthFailure: false)
+        } catch let partial as any PartialTicketResultsError {
+            let list = partial.partialTickets
+            let cached = await cache.tickets(source: source.displayName)
+            let result = list.isEmpty ? cached : mergeTickets(fresh: list, cached: cached)
+            if !list.isEmpty { await cache.setTickets(result, source: source.displayName) }
+            // Doesn't currently affect `ticketsStaleReason` (this branch always sets
+            // `failureMessage`, which forces `.error` and gates the reason off) — labeled
+            // accurately anyway so it doesn't silently mislead if that gating ever changes.
+            return TicketSourceOutcome(
+                tickets: result, usedCachedFallback: !cached.isEmpty,
+                failureMessage: partial.partialTicketsMessage, isAuthFailure: false
+            )
+        } catch {
+            let cached = await cache.tickets(source: source.displayName)
+            return TicketSourceOutcome(
+                tickets: cached, usedCachedFallback: !cached.isEmpty,
+                failureMessage: message(error), isAuthFailure: (error as? HTTPError) == .unauthorized
+            )
+        }
     }
 
     // MARK: Helpers
