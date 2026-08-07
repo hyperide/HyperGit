@@ -11,9 +11,17 @@ public protocol RepositorySource: Sendable {
     func pullRequests(owner: String, repo: String, state: HGPullRequest.State) async throws -> [HGPullRequest]
     func pullRequest(owner: String, repo: String, number: Int) async throws -> HGPullRequest
     func pullRequestFiles(owner: String, repo: String, number: Int) async throws -> [HGFileChange]
+    func checkRuns(owner: String, repo: String, ref: String) async throws -> [HGCheckRun]
     func commits(owner: String, repo: String, branch: String?) async throws -> [HGCommit]
     func issues(owner: String, repo: String, state: HGIssue.State) async throws -> [HGIssue]
     func issue(owner: String, repo: String, number: Int) async throws -> HGIssue
+}
+
+public extension RepositorySource {
+    /// Default: no checks. The GitHub Checks API is GitHub-specific (GitLab
+    /// has pipelines, not check runs); a source that doesn't have an
+    /// equivalent concept doesn't need to implement this to conform.
+    func checkRuns(owner: String, repo: String, ref: String) async throws -> [HGCheckRun] { [] }
 }
 
 /// Source-agnostic factory for previews/tests: returns canned data, never networks.
@@ -22,17 +30,20 @@ public struct PreviewRepositorySource: RepositorySource {
     public let repos: [HGRepo]
     public let prs: [HGPullRequest]
     public let issues: [HGIssue]
+    public let checks: [HGCheckRun]
 
     public init(
         user: HGUser = HGUser(id: 1, login: "hyperide", name: "HyperGit", avatarURL: nil, htmlURL: nil),
         repos: [HGRepo] = HGRepo.samples,
         prs: [HGPullRequest] = [],
-        issues: [HGIssue] = []
+        issues: [HGIssue] = [],
+        checks: [HGCheckRun] = []
     ) {
         self.user = user
         self.repos = repos
         self.prs = prs
         self.issues = issues
+        self.checks = checks
     }
 
     public func currentUser() async throws -> HGUser { user }
@@ -48,6 +59,7 @@ public struct PreviewRepositorySource: RepositorySource {
         prs.first ?? HGPullRequest.samples[0]
     }
     public func pullRequestFiles(owner: String, repo: String, number: Int) async throws -> [HGFileChange] { [] }
+    public func checkRuns(owner: String, repo: String, ref: String) async throws -> [HGCheckRun] { checks }
     public func commits(owner: String, repo: String, branch: String?) async throws -> [HGCommit] { [] }
     public func issues(owner: String, repo: String, state: HGIssue.State) async throws -> [HGIssue] { issues }
     public func issue(owner: String, repo: String, number: Int) async throws -> HGIssue {
