@@ -42,3 +42,7 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: false
         ITSAppUsesNonExemptEncryption: false
+        CFBundleURLTypes:
+          - CFBundleURLName: com.hypergit.oauth
+            CFBundleURLSchemes:
+              - hypergit
