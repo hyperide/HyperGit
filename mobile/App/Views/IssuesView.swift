@@ -1,4 +1,4 @@
-// Issues list for the selected repo.
+// Issues list + detail for the selected repo.
 import SwiftUI
 import HyperGitCore
 
@@ -17,13 +17,23 @@ struct IssuesView: View {
                 if store.issues.isEmpty {
                     PlaceholderView(icon: "smallcircle.filled.circle", title: "No issues", subtitle: "")
                 } else {
-                    List(store.issues) { issue in IssueRow(issue: issue) }
-                        .refreshable { await store.loadIssues(state: state) }
-                        .safeAreaInset(edge: .top) {
-                            if let reason = store.issuesStaleReason { OfflineBanner(reason: reason) }
+                    List(store.issues) { issue in
+                        NavigationLink(value: issue) {
+                            IssueRow(issue: issue)
                         }
+                    }
+                    .refreshable { await store.loadIssues(state: state) }
+                    .safeAreaInset(edge: .top) {
+                        if let reason = store.issuesStaleReason { OfflineBanner(reason: reason) }
+                    }
                 }
             }
+        }
+        // Registered unconditionally (not nested inside the non-empty
+        // branch above): a pushed detail view must keep resolving even if
+        // `store.issues` later becomes empty or errors on a refresh.
+        .navigationDestination(for: HGIssue.self) { issue in
+            IssueDetailView(issue: issue)
         }
         .task(id: state) { await store.loadIssues(state: state) }
     }
@@ -44,6 +54,65 @@ struct IssueRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+struct IssueDetailView: View {
+    let issue: HGIssue
+
+    var body: some View {
+        List {
+            headerSection
+            if let body = issue.body, !body.isEmpty {
+                Section("Description") {
+                    Text(body).font(.body)
+                }
+            }
+            metaSection
+            if let url = issue.htmlURL {
+                Section {
+                    Link("Open on GitHub", destination: url)
+                }
+            }
+        }
+        .navigationTitle("Issue #\(issue.number)")
+        .inlineNavigationBarTitle()
+    }
+
+    private var headerSection: some View {
+        Section {
+            Text(issue.title).font(.headline)
+            HStack(spacing: 8) {
+                Theme.badge(text: issue.state.rawValue, color: issue.state == .open ? .green : .purple)
+                if let author = issue.author {
+                    Text("by \(author.displayName)").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if !issue.labels.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(issue.labels) { label in
+                            Theme.badge(text: label.name, color: Color(hex: label.color))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var metaSection: some View {
+        Section {
+            LabeledContent("Comments", value: "\(issue.commentsCount)")
+            if !issue.assignees.isEmpty {
+                LabeledContent("Assignees", value: issue.assignees.map(\.displayName).joined(separator: ", "))
+            }
+            if let created = issue.createdAt {
+                LabeledContent("Opened", value: created.formatted(.relative(presentation: .named)))
+            }
+            if let updated = issue.updatedAt {
+                LabeledContent("Updated", value: updated.formatted(.relative(presentation: .named)))
+            }
+        }
     }
 }
 

@@ -21,6 +21,17 @@ struct ReposTab: View {
 
 struct ReposView: View {
     @Environment(AppStore.self) private var store
+    @State private var searchText = ""
+
+    /// Client-side filter over the already-loaded/cached list — no extra API call.
+    private var filteredRepos: [HGRepo] {
+        guard !searchText.isEmpty else { return store.repositories }
+        return store.repositories.filter {
+            $0.fullName.localizedCaseInsensitiveContains(searchText)
+                || $0.name.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
     var body: some View {
         Group {
             switch store.reposState {
@@ -36,11 +47,12 @@ struct ReposView: View {
                 reposList
             }
         }
+        .searchable(text: $searchText, prompt: "Search repositories")
         .task { if store.repositories.isEmpty { await store.loadRepositories() } }
     }
 
     private var reposList: some View {
-        List(store.repositories) { repo in
+        List(filteredRepos) { repo in
             NavigationLink(value: repo) {
                 RepoRow(repo: repo)
             }
@@ -51,6 +63,12 @@ struct ReposView: View {
         .refreshable { await store.loadRepositories() }
         .safeAreaInset(edge: .top) {
             if let reason = store.reposStaleReason { OfflineBanner(reason: reason) }
+        }
+        .overlay {
+            if filteredRepos.isEmpty, !searchText.isEmpty {
+                PlaceholderView(icon: "magnifyingglass", title: "No matches",
+                                subtitle: "No repositories match “\(searchText)”.")
+            }
         }
     }
 }
