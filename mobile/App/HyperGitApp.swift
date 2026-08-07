@@ -2,6 +2,7 @@
 // Keychain-backed token store and injects the shared AppStore into SwiftUI.
 import SwiftUI
 import HyperGitCore
+import OSLog
 
 @main
 struct HyperGitApp: App {
@@ -9,6 +10,8 @@ struct HyperGitApp: App {
     @State private var tokenStore: KeychainTokenStore
     @StateObject private var githubOAuth: OAuthService
     @StateObject private var linearOAuth: OAuthService
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var hasEnteredBackground = false
 
     init() {
         let tokens = KeychainTokenStore()
@@ -34,8 +37,24 @@ struct HyperGitApp: App {
         _linearOAuth = StateObject(wrappedValue: linearOAuth)
         _store = State(initialValue: AppStore(
             repoSource: github,
-            ticketSources: [github, linear]
+            ticketSources: [github, linear],
+            cache: Self.makeCache()
         ))
+    }
+
+    /// A persistent, on-disk cache so browsed repos/PRs/issues/tickets survive an app
+    /// restart (issue #4). Falls back to the in-memory store if the on-disk one can't be
+    /// opened (e.g. disk full, corrupted store) — offline browsing degrades to
+    /// this-session-only rather than crashing the app on launch, but that degradation is
+    /// logged rather than silent since it quietly disables the feature this PR ships.
+    private static func makeCache() -> CacheStore {
+        do {
+            return try SwiftDataCacheStore.makeDefault()
+        } catch {
+            Logger(subsystem: "ai.hypergit.mobile", category: "cache")
+                .error("Persistent cache unavailable, falling back to in-memory: \(error.localizedDescription)")
+            return MemoryCacheStore()
+        }
     }
 
     var body: some Scene {
@@ -48,6 +67,32 @@ struct HyperGitApp: App {
                 .onOpenURL { url in
                     // OAuth callbacks handled by ASWebAuthenticationSession internally
                 }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            // "Background sync" per issue #4/SPEC §2: refresh on returning to the
+            // foreground, on top of pull-to-refresh's on-demand path. Not a
+            // BGTaskScheduler periodic fetch — that needs extra Info.plist
+            // background-mode entitlements for a scope the issue's looser "background
+            // or on demand" wording doesn't require. The gate itself (skip cold launch,
+            // skip `.inactive` blips like the OAuth sheet that never reach `.background`,
+            // consume the flag so it can't refire) lives in AppLifecycleGate so it's
+            // unit-tested without a running Scene.
+            //
+            // Only the two always-relevant, app-level lists (repos, tickets) refresh
+            // here — PRs and issues are per-repo-detail (RepoDetailView), so they only
+            // make sense to refresh while that specific screen is visible, which is
+            // already covered by PullRequestsView/IssuesView's own `.task`/`.refreshable`.
+            let decision = AppLifecycleGate.onPhaseChange(
+                hasEnteredBackground: hasEnteredBackground,
+                isBackground: newPhase == .background,
+                isActive: newPhase == .active
+            )
+            hasEnteredBackground = decision.hasEnteredBackground
+            guard decision.shouldRefresh else { return }
+            Task {
+                await store.loadRepositories()
+                await store.loadTickets()
+            }
         }
     }
 }
