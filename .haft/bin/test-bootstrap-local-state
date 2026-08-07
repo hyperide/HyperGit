@@ -1,0 +1,157 @@
+#!/usr/bin/env sh
+set -eu
+
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/haft-bootstrap-test.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+
+cd "$root"
+
+haft_version="$(haft version)"
+if ! printf '%s\n' "$haft_version" | grep -Eq '^haft 7\.0\.0$' || \
+  ! printf '%s\n' "$haft_version" | grep -Eq 'commit:[[:space:]]+a80902c$'; then
+  printf '%s\n' "$haft_version" >&2
+  echo "haft 7.0.0 (commit a80902c) is required for bootstrap verification" >&2
+  exit 1
+fi
+
+project_id="$(sed -n 's/^id:[[:space:]]*//p' "$root/.haft/project.yaml" | sed -n '1p')"
+bootstrap_home="$tmp/home"
+fresh_fail_home="$tmp/fresh-fail-home"
+evidence_home="$tmp/evidence-fail-home"
+guard_home="$tmp/guard-home"
+missing_project_home="$tmp/missing-project-home"
+staged_evidence_home="$tmp/staged-evidence-home"
+mkdir -p "$bootstrap_home" "$fresh_fail_home" "$evidence_home" "$guard_home" "$missing_project_home" "$staged_evidence_home"
+
+missing_project_repo="$tmp/missing-project-repo"
+git clone -q "$root" "$missing_project_repo"
+(
+  cd "$missing_project_repo"
+  rm -f .haft/project.yaml
+  set +e
+  HOME="$missing_project_home" .haft/bin/bootstrap-local-state >"$tmp/missing-project.out" 2>"$tmp/missing-project.err"
+  status=$?
+  set -e
+  if [ "$status" -eq 0 ]; then
+    echo "expected bootstrap to require .haft/project.yaml" >&2
+    exit 1
+  fi
+  grep -q "run haft init" "$tmp/missing-project.err"
+)
+
+HOME="$bootstrap_home" "$root/.haft/bin/bootstrap-local-state"
+HOME="$bootstrap_home" "$root/.haft/bin/bootstrap-local-state"
+HOME="$bootstrap_home" haft spec check
+HOME="$bootstrap_home" haft check
+HOME="$bootstrap_home" haft spec coverage --json
+
+db="$bootstrap_home/.haft/projects/$project_id/haft.db"
+sqlite3 "$db" 'PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS rollback_probe(id INTEGER); INSERT INTO rollback_probe VALUES(1);' >/dev/null
+pre_baseline_count="$(sqlite3 "$db" 'SELECT count(*) FROM spec_section_baselines;')"
+pre_evidence_count="$(sqlite3 "$db" 'SELECT count(*) FROM evidence_items;')"
+set +e
+HOME="$bootstrap_home" HAFT_BOOTSTRAP_TEST_FAIL_AFTER_APPROVE=1 "$root/.haft/bin/bootstrap-local-state" >"$tmp/fail.out" 2>"$tmp/fail.err"
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+  echo "expected injected bootstrap failure" >&2
+  exit 1
+fi
+grep -q "restored local Haft database" "$tmp/fail.err"
+baseline_count="$(sqlite3 "$db" 'SELECT count(*) FROM spec_section_baselines;')"
+evidence_count="$(sqlite3 "$db" 'SELECT count(*) FROM evidence_items;')"
+probe_count="$(sqlite3 "$db" 'SELECT count(*) FROM rollback_probe;')"
+test "$baseline_count" = "$pre_baseline_count"
+test "$evidence_count" = "$pre_evidence_count"
+test "$probe_count" = 1
+test ! -e "${db}-wal"
+test ! -e "${db}-shm"
+
+lock_fifo="$tmp/db-lock.fifo"
+mkfifo "$lock_fifo"
+sqlite3 "$db" <<SQL &
+BEGIN IMMEDIATE;
+.read $lock_fifo
+COMMIT;
+SQL
+lock_pid=$!
+sleep 1
+set +e
+HOME="$bootstrap_home" "$root/.haft/bin/bootstrap-local-state" >"$tmp/busy.out" 2>"$tmp/busy.err"
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+  echo "expected bootstrap to refuse an already-open Haft database" >&2
+  exit 1
+fi
+grep -q "Haft database is already open" "$tmp/busy.err"
+: >"$lock_fifo"
+wait "$lock_pid"
+
+fresh_fail_db="$fresh_fail_home/.haft/projects/$project_id/haft.db"
+set +e
+HOME="$fresh_fail_home" HAFT_BOOTSTRAP_TEST_FAIL_AFTER_APPROVE=1 "$root/.haft/bin/bootstrap-local-state" >"$tmp/fresh-fail.out" 2>"$tmp/fresh-fail.err"
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+  echo "expected fresh injected bootstrap failure" >&2
+  exit 1
+fi
+grep -q "removed local Haft database created during bootstrap" "$tmp/fresh-fail.err"
+test ! -f "$fresh_fail_db"
+test ! -e "${fresh_fail_db}-wal"
+test ! -e "${fresh_fail_db}-shm"
+
+HOME="$evidence_home" "$root/.haft/bin/bootstrap-local-state"
+evidence_db="$evidence_home/.haft/projects/$project_id/haft.db"
+sqlite3 "$evidence_db" 'PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS rollback_probe(id INTEGER); INSERT INTO rollback_probe VALUES(1);' >/dev/null
+pre_evidence_fail_baseline_count="$(sqlite3 "$evidence_db" 'SELECT count(*) FROM spec_section_baselines;')"
+pre_evidence_fail_evidence_count="$(sqlite3 "$evidence_db" 'SELECT count(*) FROM evidence_items;')"
+evidence_status_before="$(git status --porcelain -- .haft/evidence)"
+set +e
+HOME="$evidence_home" HAFT_BOOTSTRAP_TEST_FAIL_AFTER_EVIDENCE=1 "$root/.haft/bin/bootstrap-local-state" >"$tmp/evidence-fail.out" 2>"$tmp/evidence-fail.err"
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+  echo "expected injected post-evidence bootstrap failure" >&2
+  exit 1
+fi
+grep -q "restored local Haft database" "$tmp/evidence-fail.err"
+post_evidence_fail_baseline_count="$(sqlite3 "$evidence_db" 'SELECT count(*) FROM spec_section_baselines;')"
+post_evidence_fail_evidence_count="$(sqlite3 "$evidence_db" 'SELECT count(*) FROM evidence_items;')"
+post_evidence_fail_probe_count="$(sqlite3 "$evidence_db" 'SELECT count(*) FROM rollback_probe;')"
+test "$post_evidence_fail_baseline_count" = "$pre_evidence_fail_baseline_count"
+test "$post_evidence_fail_evidence_count" = "$pre_evidence_fail_evidence_count"
+test "$post_evidence_fail_probe_count" = 1
+test ! -e "${evidence_db}-wal"
+test ! -e "${evidence_db}-shm"
+test "$(git status --porcelain -- .haft/evidence)" = "$evidence_status_before"
+
+staged_repo="$tmp/staged-evidence-repo"
+git clone -q "$root" "$staged_repo"
+(
+  cd "$staged_repo"
+  printf '\n' >> .haft/evidence/.gitkeep
+  git add .haft/evidence/.gitkeep
+  set +e
+  HOME="$staged_evidence_home" .haft/bin/bootstrap-local-state >"$tmp/staged-evidence.out" 2>"$tmp/staged-evidence.err"
+  status=$?
+  set -e
+  if [ "$status" -eq 0 ]; then
+    echo "expected bootstrap to reject staged .haft/evidence changes" >&2
+    exit 1
+  fi
+  grep -q ".haft/evidence has unstaged, staged, or untracked changes" "$tmp/staged-evidence.err"
+)
+
+set +e
+HOME="$guard_home" HAFT_DB_PATH="$tmp/split.db" "$root/.haft/bin/serve-haft" >"$tmp/serve.out" 2>"$tmp/serve.err"
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
+  echo "expected serve-haft to reject HAFT_DB_PATH" >&2
+  exit 1
+fi
+grep -q "HAFT_DB_PATH is not supported" "$tmp/serve.err"

@@ -1,0 +1,265 @@
+#!/usr/bin/env sh
+set -eu
+
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
+out="$(mktemp "${TMPDIR:-/tmp}/haft-bootstrap.XXXXXX")"
+backup="$(mktemp "${TMPDIR:-/tmp}/haft-bootstrap-db.XXXXXX")"
+restore_on_error=0
+db=
+db_existed_before=0
+evidence_cleanup_on_error=0
+evidence_status_before=
+
+remove_db_sidecars() {
+  rm -f "${db}-wal" "${db}-shm"
+}
+
+sqlite_db() {
+  sqlite3 -cmd '.timeout 10000' "$db" "$@"
+}
+
+checkpoint_db() {
+  if [ -f "$db" ]; then
+    # Force a single-file snapshot around backup/restore; Haft can choose WAL
+    # again on its next normal write, but bootstrap must not leave sidecars.
+    if sqlite_db 'PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;' >/dev/null 2>/dev/null; then
+      remove_db_sidecars
+    else
+      echo "Haft database checkpoint failed; stop other Haft processes before bootstrapping local state" >&2
+      exit 1
+    fi
+  fi
+}
+
+ensure_db_not_open() {
+  if [ -f "$db" ] && command -v lsof >/dev/null 2>&1; then
+    if lsof "$db" >"$out" 2>/dev/null && [ "$(wc -l <"$out")" -gt 1 ]; then
+      echo "Haft database is already open by another process; stop other Haft servers before bootstrapping local state" >&2
+      cat "$out" >&2
+      exit 1
+    fi
+  fi
+}
+
+send_mcp_payload_file() {
+  payload_file="$1"
+  "$root/.haft/bin/serve-haft" <"$payload_file" >"$out"
+}
+
+assert_no_mcp_error() {
+  if grep -q '"error"' "$out"; then
+    cat "$out" >&2
+    exit 1
+  fi
+}
+
+cleanup_evidence_worktree() {
+  if [ "$evidence_cleanup_on_error" = 1 ]; then
+    git restore --worktree -- .haft/evidence >/dev/null 2>&1 || true
+    git clean -ff -- .haft/evidence >/dev/null 2>&1 || true
+  fi
+}
+
+cleanup() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    cleanup_evidence_worktree
+  fi
+  if [ "$restore_on_error" = 1 ] && [ "$status" -ne 0 ] && [ -n "$db" ]; then
+    if [ "$db_existed_before" = 1 ]; then
+      remove_db_sidecars
+      sqlite_db ".restore '$backup'"
+      checkpoint_db
+      echo "Haft bootstrap failed; restored local Haft database to the pre-bootstrap state" >&2
+    else
+      rm -f "$db"
+      remove_db_sidecars
+      echo "Haft bootstrap failed; removed local Haft database created during bootstrap" >&2
+    fi
+  fi
+  rm -f "$out" "$backup"
+  exit "$status"
+}
+
+trap cleanup EXIT
+
+cd "$root"
+
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "$1 is required for Haft local bootstrap verification" >&2
+    exit 1
+  fi
+}
+
+need_cmd git
+need_cmd jq
+need_cmd sqlite3
+need_cmd swift
+
+if [ -n "${HAFT_DB_PATH:-}" ]; then
+  echo "HAFT_DB_PATH is not supported by this bootstrap; unset it to avoid split Haft state" >&2
+  exit 1
+fi
+
+if [ ! -f .haft/project.yaml ]; then
+  echo ".haft/project.yaml is missing; run haft init before bootstrapping local state" >&2
+  exit 1
+fi
+project_id="$(sed -n 's/^id:[[:space:]]*//p' .haft/project.yaml | sed -n '1p')"
+case "$project_id" in
+  ""|[!A-Za-z0-9]*|*..*|*[!A-Za-z0-9._-]*)
+    echo ".haft/project.yaml id must be a non-empty safe slug" >&2
+    exit 1
+    ;;
+esac
+db="$HOME/.haft/projects/$project_id/haft.db"
+ensure_db_not_open
+
+for script in \
+  .haft/bin/bootstrap-local-state \
+  .haft/bin/install-codex-mcp \
+  .haft/bin/serve-haft \
+  .haft/bin/test-bootstrap-local-state
+do
+  sh -n "$script"
+done
+git diff --check
+git diff --cached --check
+if {
+  git diff --name-only
+  git diff --cached --name-only
+  git ls-files --others --exclude-standard server
+} | grep -q '^server/'; then
+  echo "working tree touches server/ while this bootstrap is scoped to mobile/tooling" >&2
+  exit 1
+fi
+if ! jq -e '.mcp.haft.enabled == false and .mcp.haft.type == "local" and .mcp.haft.command == [".haft/bin/serve-haft"]' opencode.json >/dev/null; then
+  jq '.mcp.haft // null' opencode.json >&2
+  echo "opencode.json must keep the checked-in Haft MCP command disabled by default" >&2
+  exit 1
+fi
+(cd mobile && swift build)
+(cd mobile && swift test)
+
+if [ -f "$db" ]; then
+  checkpoint_db
+  sqlite_db ".backup '$backup'"
+  db_existed_before=1
+fi
+restore_on_error=1
+
+haft sync
+
+if [ ! -f "$db" ]; then
+  echo "Haft database was not created at $db after haft sync" >&2
+  exit 1
+fi
+checkpoint_db
+
+send_mcp_payload_file ".haft/bootstrap/spec-approvals.jsonl"
+assert_no_mcp_error
+
+if ! haft spec check >"$out" 2>&1; then
+  if grep -q 'spec_section_drifted' "$out"; then
+    if [ "${HAFT_BOOTSTRAP_REBASELINE:-}" != 1 ]; then
+      cat "$out" >&2
+      echo "SpecSection drift requires explicit rebaseline: set HAFT_BOOTSTRAP_REBASELINE=1 and HAFT_BOOTSTRAP_REBASELINE_REASON=<reason>" >&2
+      exit 1
+    fi
+    rebaseline_reason="${HAFT_BOOTSTRAP_REBASELINE_REASON:-}"
+    if [ -z "$rebaseline_reason" ]; then
+      echo "HAFT_BOOTSTRAP_REBASELINE_REASON is required when HAFT_BOOTSTRAP_REBASELINE=1" >&2
+      exit 1
+    fi
+    drift_sections="$(sed -n 's/.*section=\([^[:space:]]*\).*/\1/p' "$out" | sort -u)"
+    if [ -z "$drift_sections" ]; then
+      cat "$out" >&2
+      echo "SpecSection drift was reported but no section ids could be parsed" >&2
+      exit 1
+    fi
+    reason_json="$(printf '%s' "$rebaseline_reason" | jq -Rsa .)"
+    {
+      cat <<'JSON'
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"haft-bootstrap-rebaseline","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}
+JSON
+      json_id=2
+      for section_id in $drift_sections; do
+        case "$section_id" in
+          TS.hypergit.mobile.000|TS.hypergit.mobile.001|TS.hypergit.mobile.boundary.001|ES.hypergit.mobile.000)
+            section_json="$(printf '%s' "$section_id" | jq -Rsa .)"
+            printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"haft_spec_section","arguments":{"action":"rebaseline","section_id":%s,"reason":%s}}}\n' "$json_id" "$section_json" "$reason_json"
+            json_id=$((json_id + 1))
+            ;;
+          *)
+            echo "Refusing to rebaseline unexpected section id: $section_id" >&2
+            exit 1
+            ;;
+        esac
+      done
+    } | "$root/.haft/bin/serve-haft" >"$out"
+    if grep -q '"error"' "$out"; then
+      cat "$out" >&2
+      exit 1
+    fi
+    haft spec check
+  else
+    cat "$out" >&2
+    exit 1
+  fi
+fi
+
+if [ "${HAFT_BOOTSTRAP_TEST_FAIL_AFTER_APPROVE:-}" = 1 ]; then
+  echo "intentional bootstrap failure after SpecSection approval" >&2
+  exit 1
+fi
+
+haft spec coverage --json >"$out"
+if ! jq -e '(.gaps | length == 0) and ((.summary.state_counts.verified // 0) == .summary.total_sections)' "$out" >/dev/null; then
+  evidence_dirty="$({
+    git diff --name-only -- .haft/evidence
+    git diff --cached --name-only -- .haft/evidence
+    git ls-files --others --exclude-standard .haft/evidence
+  })"
+  if [ -n "$evidence_dirty" ]; then
+    printf '%s\n' "$evidence_dirty" >&2
+    echo ".haft/evidence has unstaged, staged, or untracked changes; clean it before bootstrap can attach DB-local evidence" >&2
+    exit 1
+  fi
+  evidence_status_before="$(git status --porcelain -- .haft/evidence)"
+  evidence_cleanup_on_error=1
+
+  send_mcp_payload_file ".haft/bootstrap/evidence.jsonl"
+  cleanup_evidence_worktree
+  evidence_cleanup_on_error=0
+  if [ "$(git status --porcelain -- .haft/evidence)" != "$evidence_status_before" ]; then
+    echo "Haft evidence attachment changed tracked .haft/evidence carriers; bootstrap restored what it could, but status still differs" >&2
+    exit 1
+  fi
+  assert_no_mcp_error
+fi
+
+if [ "${HAFT_BOOTSTRAP_TEST_FAIL_AFTER_EVIDENCE:-}" = 1 ]; then
+  echo "intentional bootstrap failure after evidence coverage verification" >&2
+  exit 1
+fi
+
+haft check
+
+haft spec coverage --json >"$out"
+if ! jq -e '(.gaps | length == 0) and ((.summary.state_counts.verified // 0) == .summary.total_sections)' "$out" >/dev/null; then
+  cat "$out" >&2
+  echo "Spec coverage did not verify every active section" >&2
+  exit 1
+fi
+
+haft spec onboard --json >"$out"
+if ! jq -e '.terminal == true' "$out" >/dev/null; then
+  onboard_phase="$(jq -r '.phase // "unknown"' "$out")"
+  echo "Haft onboarding is not terminal (${onboard_phase}); this bootstrap verifies mobile/tooling only, not full project readiness" >&2
+fi
+
+checkpoint_db
+restore_on_error=0

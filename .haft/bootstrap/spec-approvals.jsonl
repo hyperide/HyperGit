@@ -1,0 +1,6 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"haft-bootstrap","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"haft_spec_section","arguments":{"action":"approve","section_id":"TS.hypergit.mobile.000","approved_by":"bootstrap-local-state"}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"haft_spec_section","arguments":{"action":"approve","section_id":"TS.hypergit.mobile.001","approved_by":"bootstrap-local-state"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"haft_spec_section","arguments":{"action":"approve","section_id":"TS.hypergit.mobile.boundary.001","approved_by":"bootstrap-local-state"}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"haft_spec_section","arguments":{"action":"approve","section_id":"ES.hypergit.mobile.000","approved_by":"bootstrap-local-state"}}}

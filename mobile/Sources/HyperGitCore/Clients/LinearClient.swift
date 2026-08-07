@@ -3,73 +3,83 @@
 // question (SPEC §9). SPEC §2.2.
 import Foundation
 
+public typealias LinearTransport = @Sendable (_ body: Data, _ headers: [String: String]) async throws -> Data
+
+public enum LinearClientError: Error, Equatable, Sendable {
+    case graphQLErrors([String])
+    case paginationLimitExceeded(maxPages: Int, partialTickets: [HGTicket])
+}
+
 public struct LinearClient: TicketSource {
     public var displayName: String { "Linear" }
 
     public let endpoint: URL
     public let tokenProvider: @Sendable () -> String?
+    public let oauthAccessTokenProvider: AccessTokenProvider?
     public let session: URLSession
+    public let transport: LinearTransport
+    public let maxPages: Int
     private let tokenStore: (any TokenStore)?
 
     public init(
         endpoint: URL = URL(string: "https://api.linear.app/graphql")!,
         tokenProvider: @escaping @Sendable () -> String?,
+        oauthAccessTokenProvider: AccessTokenProvider? = nil,
+        transport: LinearTransport? = nil,
         session: URLSession = .shared,
-        tokenStore: (any TokenStore)? = nil
+        tokenStore: (any TokenStore)? = nil,
+        maxPages: Int = Self.defaultMaxPages
     ) {
         self.endpoint = endpoint
         self.tokenProvider = tokenProvider
+        self.oauthAccessTokenProvider = oauthAccessTokenProvider
         self.session = session
+        self.transport = transport ?? Self.urlSessionTransport(endpoint: endpoint, session: session)
         self.tokenStore = tokenStore
+        self.maxPages = maxPages
     }
 
+    public static let pageSize = 50
+    public static let defaultMaxPages = 10
+
     public func tickets() async throws -> [HGTicket] {
-        // Try OAuth token first, fallback to API key
-        let token: String?
-        if let store = tokenStore,
-           let oauth = store.oauthTokens(for: .linear) {
-            let accessToken = oauth.accessToken
-            if !accessToken.isEmpty {
-                token = accessToken
-            } else {
-                token = tokenProvider()
+        var result: [HGTicket] = []
+        var after: String?
+        var pages = 0
+        var hasNextPage = true
+
+        while hasNextPage, pages < maxPages {
+            guard let token = try await authorizationToken() else { throw HTTPError.unauthorized }
+            pages += 1
+            let data = try await ticketPageData(first: Self.pageSize, after: after, token: token)
+            let decoded = try Linear.decode(GraphQLResponse.self, from: data)
+            if let errors = decoded.errors, !errors.isEmpty {
+                throw LinearClientError.graphQLErrors(errors.map(\.message))
             }
-        } else {
-            token = tokenProvider()
+            guard let issues = decoded.data?.issues else {
+                throw HTTPError.decoding("Missing Linear issues data")
+            }
+
+            result.append(contentsOf: issues.nodes.map { $0.toTicket() })
+            hasNextPage = issues.pageInfo.hasNextPage
+            if hasNextPage {
+                guard let cursor = issues.pageInfo.endCursor, !cursor.isEmpty else {
+                    throw HTTPError.decoding("Missing Linear pagination cursor")
+                }
+                after = cursor
+            }
         }
 
-        guard let token else { throw HTTPError.unauthorized }
-
-        let payload = try JSONSerialization.data(withJSONObject: [
-            "query": Self.ticketsQuery,
-            "variables": ["first": 50] as [String: Any],
-        ])
-        var req = URLRequest(url: endpoint)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("HyperGitMobile/0.1", forHTTPHeaderField: "User-Agent")
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.httpBody = payload
-
-        let (data, resp): (Data, URLResponse)
-        do { (data, resp) = try await session.data(for: req) }
-        catch { throw HTTPError.invalidResponse }
-
-        guard let http = resp as? HTTPURLResponse else { throw HTTPError.invalidResponse }
-        switch http.statusCode {
-        case 200..<300: break
-        case 401: throw HTTPError.unauthorized
-        case 403: throw HTTPError.forbidden
-        default: throw HTTPError.badStatus(http.statusCode)
+        if hasNextPage {
+            throw LinearClientError.paginationLimitExceeded(maxPages: maxPages, partialTickets: result)
         }
 
-        let decoded = try Linear.decoder.decode(GraphQLResponse.self, from: data)
-        return decoded.data.issues.nodes.map { $0.toTicket() }
+        return result
     }
 
     static let ticketsQuery = """
-    query MobileTickets($first: Int!) {
-      issues(first: $first, orderBy: updatedAt) {
+    query MobileTickets($first: Int!, $after: String) {
+      issues(first: $first, after: $after, orderBy: updatedAt) {
         nodes {
           id identifier title state { name }
           team { key name }
@@ -77,15 +87,72 @@ public struct LinearClient: TicketSource {
           labels(first: 10) { nodes { name } }
           url updatedAt
         }
+        pageInfo { hasNextPage endCursor }
       }
     }
     """
 
+    private func authorizationToken() async throws -> String? {
+        if let manual = AuthTokenSelection.manualToken(tokenProvider()) {
+            return manual
+        }
+        if let oauthAccessTokenProvider {
+            return try await oauthAccessTokenProvider()
+        }
+        return AuthTokenSelection.accessToken(tokenStore?.oauthTokens(for: .linear))
+    }
+
+    private func ticketPageData(first: Int, after: String?, token: String) async throws -> Data {
+        var variables: [String: Any] = ["first": first]
+        if let after { variables["after"] = after }
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "query": Self.ticketsQuery,
+            "variables": variables,
+        ])
+        return try await transport(payload, [
+            "Content-Type": "application/json",
+            "User-Agent": "HyperGitMobile/0.1",
+            "Authorization": "Bearer \(token)",
+        ])
+    }
+
+    private static func urlSessionTransport(endpoint: URL, session: URLSession) -> LinearTransport {
+        { body, headers in
+            var req = URLRequest(url: endpoint)
+            req.httpMethod = "POST"
+            req.httpBody = body
+            for (key, value) in headers { req.setValue(value, forHTTPHeaderField: key) }
+
+            let (data, resp): (Data, URLResponse)
+            do { (data, resp) = try await session.data(for: req) }
+            catch { throw HTTPError.invalidResponse }
+
+            guard let http = resp as? HTTPURLResponse else { throw HTTPError.invalidResponse }
+            switch http.statusCode {
+            case 200..<300: return data
+            case 401: throw HTTPError.unauthorized
+            case 403: throw HTTPError.forbidden
+            default: throw HTTPError.badStatus(http.statusCode)
+            }
+        }
+    }
+
     // MARK: - GraphQL response shapes
 
-    struct GraphQLResponse: Decodable { let data: DataRoot }
+    struct GraphQLResponse: Decodable {
+        let data: DataRoot?
+        let errors: [GraphQLError]?
+    }
+    struct GraphQLError: Decodable { let message: String }
     struct DataRoot: Decodable { let issues: IssuesConnection }
-    struct IssuesConnection: Decodable { let nodes: [IssueNode] }
+    struct IssuesConnection: Decodable {
+        let nodes: [IssueNode]
+        let pageInfo: PageInfo
+    }
+    struct PageInfo: Decodable {
+        let hasNextPage: Bool
+        let endCursor: String?
+    }
     struct IssueNode: Decodable {
         let id: String
         let identifier: String
@@ -122,6 +189,11 @@ public struct LinearClient: TicketSource {
 
 enum Linear {
     static let decoder: JSONDecoder = JSONDecoder()
+
+    static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        do { return try decoder.decode(T.self, from: data) }
+        catch { throw HTTPError.decoding(String(describing: error)) }
+    }
 
     /// Parse Linear's ISO8601 timestamps, tolerating optional fractional seconds.
     static func parseDate(_ s: String) -> Date? {

@@ -26,13 +26,26 @@ struct TicketsView: View {
             switch store.ticketsState {
             case .loading where store.tickets.isEmpty:
                 ProgressView("Loading tickets…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .error(let message) where store.tickets.isEmpty:
+                ContentUnavailableView {
+                    Label("Could not load tickets", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(message)
+                }
             default:
                 if store.tickets.isEmpty {
                     PlaceholderView(icon: "ticket",
                                     title: "No tickets",
                                     subtitle: "Add a Linear API key in Settings to pull your issues.")
                 } else {
-                    List(store.tickets) { ticket in TicketRow(ticket: ticket) }
+                    List {
+                        if case .error(let message) = store.ticketsState {
+                            Text(message)
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
+                        }
+                        ForEach(store.tickets) { ticket in TicketRow(ticket: ticket) }
+                    }
                 }
             }
         }

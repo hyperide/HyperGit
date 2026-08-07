@@ -29,7 +29,7 @@ public struct OAuthConfig: Sendable {
         clientId: "",
         clientSecret: "",
         redirectURI: "hypergit://oauth-callback?provider=linear",
-        scopes: ["read", "write"],
+        scopes: ["read"],
         authURL: URL(string: "https://linear.app/oauth/authorize")!,
         tokenURL: URL(string: "https://api.linear.app/oauth/token")!
     )
@@ -48,6 +48,7 @@ public enum OAuthError: Error, Equatable, Sendable {
     case pkceGenerationFailed
     case noPresentationContext
     case providerMismatch
+    case authenticationInProgress
 }
 
 @MainActor
@@ -69,6 +70,9 @@ public final class OAuthService: NSObject, ObservableObject {
 
     /// Start the OAuth authorization flow. Returns tokens on success.
     public func authenticate() async throws -> OAuthTokens {
+        guard currentSession == nil, continuation == nil else {
+            throw OAuthError.authenticationInProgress
+        }
         guard !config.clientId.isEmpty, !config.clientSecret.isEmpty else {
             throw OAuthError.invalidConfiguration("Missing client ID or secret for \(provider.rawValue)")
         }
@@ -103,18 +107,23 @@ public final class OAuthService: NSObject, ObservableObject {
             throw OAuthError.tokenRefreshFailed("No refresh token available")
         }
 
-        var components = URLComponents(url: config.tokenURL, resolvingAgainstBaseURL: false)!
-        components.queryItems = [
+        var bodyItems = [
             URLQueryItem(name: "grant_type", value: "refresh_token"),
             URLQueryItem(name: "refresh_token", value: refreshToken),
             URLQueryItem(name: "client_id", value: config.clientId),
-            URLQueryItem(name: "client_secret", value: config.clientSecret),
         ]
+        if provider == .github {
+            bodyItems.append(URLQueryItem(name: "client_secret", value: config.clientSecret))
+        }
 
-        var request = URLRequest(url: components.url!)
+        var request = URLRequest(url: config.tokenURL)
         request.httpMethod = "POST"
+        request.httpBody = formURLEncodedData(bodyItems)
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue("HyperGitMobile/1.0", forHTTPHeaderField: "User-Agent")
+        if provider == .linear {
+            request.setValue(basicAuthorizationHeader(), forHTTPHeaderField: "Authorization")
+        }
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -124,6 +133,7 @@ public final class OAuthService: NSObject, ObservableObject {
         switch httpResponse.statusCode {
         case 200..<300:
             let tokens = try parseTokenResponse(data, provider: provider)
+                .preservingRefreshToken(refreshToken)
             try tokenStore.setOAuthTokens(tokens, for: provider)
             return tokens
         case 400, 401:
@@ -171,34 +181,32 @@ public final class OAuthService: NSObject, ObservableObject {
     }
 
     private func handleCallback(callbackURL: URL?, error: Error?) {
-        defer { continuation = nil; currentSession = nil; pkceVerifier = nil }
-
         if let error = error as? ASWebAuthenticationSessionError,
            error.code == .canceledLogin {
-            continuation?.resume(throwing: OAuthError.userCancelled)
+            finishAuthentication(.failure(OAuthError.userCancelled))
             return
         }
 
         guard let callbackURL else {
-            continuation?.resume(throwing: OAuthError.invalidCallbackURL("No callback URL"))
+            finishAuthentication(.failure(OAuthError.invalidCallbackURL("No callback URL")))
             return
         }
 
         guard let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
               let queryItems = components.queryItems else {
-            continuation?.resume(throwing: OAuthError.invalidCallbackURL(callbackURL.absoluteString))
+            finishAuthentication(.failure(OAuthError.invalidCallbackURL(callbackURL.absoluteString)))
             return
         }
 
         let params = Dictionary(uniqueKeysWithValues: queryItems.map { ($0.name, $0.value ?? "") })
 
         guard params["provider"] == provider.rawValue else {
-            continuation?.resume(throwing: OAuthError.providerMismatch)
+            finishAuthentication(.failure(OAuthError.providerMismatch))
             return
         }
 
         guard let code = params["code"], !code.isEmpty else {
-            continuation?.resume(throwing: OAuthError.missingCode)
+            finishAuthentication(.failure(OAuthError.missingCode))
             return
         }
 
@@ -207,28 +215,28 @@ public final class OAuthService: NSObject, ObservableObject {
         UserDefaults.standard.removeObject(forKey: "oauth_state_\(provider.rawValue)")
 
         guard let expectedState, receivedState == expectedState else {
-            continuation?.resume(throwing: OAuthError.stateMismatch(expected: expectedState ?? "", received: receivedState ?? ""))
+            finishAuthentication(.failure(OAuthError.stateMismatch(expected: expectedState ?? "", received: receivedState ?? "")))
+            return
+        }
+
+        guard let verifier = pkceVerifier else {
+            finishAuthentication(.failure(OAuthError.pkceGenerationFailed))
             return
         }
 
         Task {
             do {
-                let tokens = try await exchangeCodeForTokens(code: code)
+                let tokens = try await exchangeCodeForTokens(code: code, verifier: verifier)
                 try tokenStore.setOAuthTokens(tokens, for: provider)
-                continuation?.resume(returning: tokens)
+                finishAuthentication(.success(tokens))
             } catch {
-                continuation?.resume(throwing: error)
+                finishAuthentication(.failure(error))
             }
         }
     }
 
-    private func exchangeCodeForTokens(code: String) async throws -> OAuthTokens {
-        guard let verifier = pkceVerifier else {
-            throw OAuthError.pkceGenerationFailed
-        }
-
-        var components = URLComponents(url: config.tokenURL, resolvingAgainstBaseURL: false)!
-        var queryItems = [
+    private func exchangeCodeForTokens(code: String, verifier: String) async throws -> OAuthTokens {
+        var bodyItems = [
             URLQueryItem(name: "grant_type", value: "authorization_code"),
             URLQueryItem(name: "code", value: code),
             URLQueryItem(name: "redirect_uri", value: config.redirectURI),
@@ -238,23 +246,19 @@ public final class OAuthService: NSObject, ObservableObject {
 
         // GitHub uses client_secret in body; Linear uses Basic auth
         if provider == .github {
-            queryItems.append(URLQueryItem(name: "client_secret", value: config.clientSecret))
+            bodyItems.append(URLQueryItem(name: "client_secret", value: config.clientSecret))
         }
 
-        components.queryItems = queryItems
-
-        var request = URLRequest(url: components.url!)
+        var request = URLRequest(url: config.tokenURL)
         request.httpMethod = "POST"
+        request.httpBody = formURLEncodedData(bodyItems)
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("HyperGitMobile/1.0", forHTTPHeaderField: "User-Agent")
 
         // Linear uses Basic auth for client credentials
         if provider == .linear {
-            let credentials = "\(config.clientId):\(config.clientSecret)"
-                .data(using: .utf8)?
-                .base64EncodedString() ?? ""
-            request.setValue("Basic \(credentials)", forHTTPHeaderField: "Authorization")
+            request.setValue(basicAuthorizationHeader(), forHTTPHeaderField: "Authorization")
         }
 
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -271,6 +275,33 @@ public final class OAuthService: NSObject, ObservableObject {
         default:
             throw OAuthError.tokenExchangeFailed("HTTP \(httpResponse.statusCode)")
         }
+    }
+
+    private func finishAuthentication(_ result: Result<OAuthTokens, Error>) {
+        let continuation = continuation
+        self.continuation = nil
+        currentSession = nil
+        pkceVerifier = nil
+
+        switch result {
+        case .success(let tokens):
+            continuation?.resume(returning: tokens)
+        case .failure(let error):
+            continuation?.resume(throwing: error)
+        }
+    }
+
+    private func formURLEncodedData(_ queryItems: [URLQueryItem]) -> Data {
+        var components = URLComponents()
+        components.queryItems = queryItems
+        return Data((components.percentEncodedQuery ?? "").utf8)
+    }
+
+    private func basicAuthorizationHeader() -> String {
+        let credentials = "\(config.clientId):\(config.clientSecret)"
+            .data(using: .utf8)?
+            .base64EncodedString() ?? ""
+        return "Basic \(credentials)"
     }
 
     private func parseTokenResponse(_ data: Data, provider: OAuthProvider) throws -> OAuthTokens {
@@ -385,7 +416,7 @@ extension OAuthService: ASWebAuthenticationPresentationContextProviding {
 
 private extension Data {
     var sha256: Data {
-        var hash = SHA256.hash(data: self)
+        let hash = SHA256.hash(data: self)
         return Data(hash)
     }
 

@@ -39,6 +39,22 @@ public struct HTTPClient: Sendable {
         session: URLSession = .shared,
         userAgent: String = "HyperGitMobile/0.1"
     ) -> HTTPTransport {
+        transport(
+            baseURL: baseURL,
+            accessTokenProvider: { tokenProvider() },
+            defaultHeaders: defaultHeaders,
+            session: session,
+            userAgent: userAgent
+        )
+    }
+
+    public static func transport(
+        baseURL: URL,
+        accessTokenProvider: @escaping AccessTokenProvider,
+        defaultHeaders: [String: String] = [:],
+        session: URLSession = .shared,
+        userAgent: String = "HyperGitMobile/0.1"
+    ) -> HTTPTransport {
         return { path, headers in
             guard let url = URL(string: baseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/" + path) else {
                 throw HTTPError.invalidURL
@@ -47,7 +63,7 @@ public struct HTTPClient: Sendable {
             req.httpMethod = "GET"
             req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
             for (k, v) in defaultHeaders { req.setValue(v, forHTTPHeaderField: k) }
-            if let token = tokenProvider() {
+            if let token = try await accessTokenProvider() {
                 req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             }
             for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }

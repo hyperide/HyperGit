@@ -12,6 +12,11 @@ public enum LoadState: Sendable, Equatable {
     case error(String)
 }
 
+public protocol PartialTicketResultsError: Error {
+    var partialTickets: [HGTicket] { get }
+    var partialTicketsMessage: String { get }
+}
+
 @MainActor
 @Observable
 public final class AppStore {
@@ -133,17 +138,38 @@ public final class AppStore {
         guard !ticketSources.isEmpty else { ticketsState = .loaded; return }
         ticketsState = .loading
         var collected: [HGTicket] = []
+        var failures: [String] = []
+        var authFailures: [String] = []
         for source in ticketSources {
             do {
                 let list = try await source.tickets()
                 await cache.setTickets(list, source: source.displayName)
                 collected.append(contentsOf: list)
+            } catch let partial as any PartialTicketResultsError {
+                let list = partial.partialTickets
+                let cached = await cache.tickets(source: source.displayName)
+                if !list.isEmpty {
+                    let merged = mergeTickets(fresh: list, cached: cached)
+                    await cache.setTickets(merged, source: source.displayName)
+                    collected.append(contentsOf: merged)
+                } else {
+                    collected.append(contentsOf: cached)
+                }
+                failures.append(partial.partialTicketsMessage)
             } catch {
                 collected.append(contentsOf: await cache.tickets(source: source.displayName))
+                if (error as? HTTPError) == .unauthorized {
+                    authFailures.append(message(error))
+                } else {
+                    failures.append(message(error))
+                }
             }
         }
         tickets = collected.sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
-        ticketsState = .loaded
+        if failures.isEmpty, tickets.isEmpty, !authFailures.isEmpty {
+            failures = authFailures
+        }
+        ticketsState = failures.isEmpty ? .loaded : .error(failures.joined(separator: " "))
     }
 
     // MARK: Helpers
@@ -151,6 +177,31 @@ public final class AppStore {
     private func message(_ error: Error) -> String {
         if let http = error as? HTTPError { return http.humanDescription }
         return error.localizedDescription
+    }
+
+    private func mergeTickets(fresh: [HGTicket], cached: [HGTicket]) -> [HGTicket] {
+        let freshIDs = Set(fresh.map(\.id))
+        return fresh + cached.filter { !freshIDs.contains($0.id) }
+    }
+}
+
+extension LinearClientError: PartialTicketResultsError {
+    public var partialTickets: [HGTicket] {
+        switch self {
+        case .paginationLimitExceeded(maxPages: _, partialTickets: let partialTickets):
+            return partialTickets
+        case .graphQLErrors:
+            return []
+        }
+    }
+
+    public var partialTicketsMessage: String {
+        switch self {
+        case .paginationLimitExceeded(maxPages: let maxPages, partialTickets: let partialTickets):
+            return "Loaded \(partialTickets.count) Linear tickets from the first \(maxPages) pages."
+        case .graphQLErrors(let messages):
+            return messages.joined(separator: " ")
+        }
     }
 }
 

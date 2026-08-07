@@ -49,4 +49,101 @@ struct ModelsTests {
             #expect(store.reposState == .loaded)
         }
     }
+
+    @Test("AppStore keeps partial ticket results when pagination limit is hit")
+    func storeKeepsPartialTickets() async {
+        let partial = Self.ticket(
+            id: "linear-1",
+            identifier: "ENG-1",
+            title: "Partial",
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+        let cachedBeyondLimit = Self.ticket(
+            id: "linear-2",
+            identifier: "ENG-2",
+            title: "Cached beyond limit",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+
+        struct Partial: TicketSource {
+            var displayName: String { "Linear" }
+            let ticketsToReturn: [HGTicket]
+
+            func tickets() async throws -> [HGTicket] {
+                throw LinearClientError.paginationLimitExceeded(maxPages: 1, partialTickets: ticketsToReturn)
+            }
+        }
+
+        let cache = MemoryCacheStore()
+        await cache.setTickets([Self.ticket(id: "linear-1", identifier: "ENG-1", title: "Old partial"), cachedBeyondLimit], source: "Linear")
+        let store = await AppStore(ticketSources: [Partial(ticketsToReturn: [partial])], cache: cache)
+        await store.loadTickets()
+
+        await MainActor.run {
+            #expect(store.tickets.map(\.id) == ["linear-1", "linear-2"])
+            #expect(store.tickets.first?.title == "Partial")
+            #expect(store.ticketsState == .error("Loaded 1 Linear tickets from the first 1 pages."))
+        }
+
+        let cached = await cache.tickets(source: "Linear")
+        #expect(cached.map(\.id) == ["linear-1", "linear-2"])
+        #expect(cached.first?.title == "Partial")
+    }
+
+    @Test("AppStore ignores missing credentials for optional ticket sources when another source loads")
+    func optionalTicketSourceUnauthorizedDoesNotPoisonLoadedTickets() async {
+        enum Outcome: Sendable {
+            case success([HGTicket])
+            case unauthorized
+        }
+
+        struct Source: TicketSource {
+            var displayName: String
+            var outcome: Outcome
+
+            func tickets() async throws -> [HGTicket] {
+                switch outcome {
+                case .success(let tickets): return tickets
+                case .unauthorized: throw HTTPError.unauthorized
+                }
+            }
+        }
+
+        let githubTicket = Self.ticket(id: "github-1", identifier: "GH-1", title: "GitHub")
+        let linearTicket = Self.ticket(id: "linear-1", identifier: "LIN-1", title: "Linear")
+
+        let githubOnly = await AppStore(ticketSources: [
+            Source(displayName: "GitHub", outcome: .success([githubTicket])),
+            Source(displayName: "Linear", outcome: .unauthorized),
+        ])
+        await githubOnly.loadTickets()
+
+        let linearOnly = await AppStore(ticketSources: [
+            Source(displayName: "GitHub", outcome: .unauthorized),
+            Source(displayName: "Linear", outcome: .success([linearTicket])),
+        ])
+        await linearOnly.loadTickets()
+
+        await MainActor.run {
+            #expect(githubOnly.tickets == [githubTicket])
+            #expect(githubOnly.ticketsState == .loaded)
+            #expect(linearOnly.tickets == [linearTicket])
+            #expect(linearOnly.ticketsState == .loaded)
+        }
+    }
+
+    private static func ticket(id: String, identifier: String, title: String, updatedAt: Date? = nil) -> HGTicket {
+        HGTicket(
+            id: id,
+            source: .linear,
+            identifier: identifier,
+            title: title,
+            stateName: "Todo",
+            team: "Engineering",
+            assignee: nil,
+            labels: [],
+            url: nil,
+            updatedAt: updatedAt
+        )
+    }
 }

@@ -18,17 +18,23 @@ struct HyperGitApp: App {
         let linearOAuth = OAuthService(provider: .linear, config: OAuthConfig.linearWithConfig, tokenStore: tokens)
 
         // Build clients with tokenStore for OAuth support
-        let github = GitHubClient(tokenProvider: { tokens.token(for: .github) }, tokenStore: tokens)
-        let linear = LinearClient(tokenProvider: { tokens.token(for: .linear) }, tokenStore: tokens)
+        let github = GitHubClient(
+            tokenProvider: { tokens.token(for: .github) },
+            oauthAccessTokenProvider: { try await githubOAuth.validAccessToken() },
+            tokenStore: tokens
+        )
+        let linear = LinearClient(
+            tokenProvider: { tokens.token(for: .linear) },
+            oauthAccessTokenProvider: { try await linearOAuth.validAccessToken() },
+            tokenStore: tokens
+        )
 
         _tokenStore = State(initialValue: tokens)
-        _githubOAuth = StateObject(wrappedValue: OAuthService(provider: .github, config: OAuthConfig.github, tokenStore: KeychainTokenStore()))
-        _linearOAuth = StateObject(wrappedValue: OAuthService(provider: .linear, config: OAuthConfig.linear, tokenStore: KeychainTokenStore()))
+        _githubOAuth = StateObject(wrappedValue: githubOAuth)
+        _linearOAuth = StateObject(wrappedValue: linearOAuth)
         _store = State(initialValue: AppStore(
-            repoSource: GitHubClient(tokenProvider: { KeychainTokenStore().token(for: .github) }, tokenStore: KeychainTokenStore()),
-            ticketSources: [
-                LinearClient(tokenProvider: { KeychainTokenStore().token(for: .linear) }, tokenStore: KeychainTokenStore())
-            ]
+            repoSource: github,
+            ticketSources: [github, linear]
         ))
     }
 
@@ -36,7 +42,9 @@ struct HyperGitApp: App {
         WindowGroup {
             RootView()
                 .environment(store)
-                .environment(\.tokenStore, KeychainTokenStore())
+                .environment(\.tokenStore, tokenStore)
+                .environment(\.githubOAuthService, githubOAuth)
+                .environment(\.linearOAuthService, linearOAuth)
                 .onOpenURL { url in
                     // OAuth callbacks handled by ASWebAuthenticationSession internally
                 }
@@ -57,14 +65,14 @@ struct RootView: View {
     }
 
     init() {
-        let tokenStore = KeychainTokenStore()
-        let hasGitHubToken = tokenStore.token(for: .github) != nil || tokenStore.oauthTokens(for: .github) != nil
-        _selection = State(initialValue: hasGitHubToken ? .repos : .settings)
+        _selection = State(initialValue: .settings)
     }
 
     var hasGitHubToken: Bool {
-        let tokenStore = KeychainTokenStore()
-        return tokenStore.token(for: .github) != nil || tokenStore.oauthTokens(for: .github) != nil
+        AuthTokenSelection.hasStoredCredential(
+            manual: tokenStore.token(for: .github),
+            oauth: tokenStore.oauthTokens(for: .github)
+        )
     }
 
     var body: some View {
@@ -83,6 +91,11 @@ struct RootView: View {
                 .tag(Tab.settings)
         }
         .tint(Theme.tint)
+        .onAppear {
+            if selection == .settings, hasGitHubToken {
+                selection = .repos
+            }
+        }
     }
 
     private var reposTab: some View {
@@ -108,8 +121,10 @@ struct RootView: View {
 
     private var ticketsTab: some View {
         NavigationStack {
-            let tokenStore = KeychainTokenStore()
-            let hasLinearToken = tokenStore.token(for: .linear) != nil || tokenStore.oauthTokens(for: .linear) != nil
+            let hasLinearToken = AuthTokenSelection.hasStoredCredential(
+                manual: tokenStore.token(for: .linear),
+                oauth: tokenStore.oauthTokens(for: .linear)
+            )
             if hasGitHubToken || hasLinearToken {
                 TicketsView()
                     .navigationTitle("Tickets")
@@ -181,9 +196,23 @@ private struct SettingsTab: View {
 private struct TokenStoreKey: EnvironmentKey {
     static let defaultValue: KeychainTokenStore = KeychainTokenStore()
 }
+private struct GitHubOAuthServiceKey: EnvironmentKey {
+    static let defaultValue: OAuthService? = nil
+}
+private struct LinearOAuthServiceKey: EnvironmentKey {
+    static let defaultValue: OAuthService? = nil
+}
 extension EnvironmentValues {
     var tokenStore: KeychainTokenStore {
         get { self[TokenStoreKey.self] }
         set { self[TokenStoreKey.self] = newValue }
+    }
+    var githubOAuthService: OAuthService? {
+        get { self[GitHubOAuthServiceKey.self] }
+        set { self[GitHubOAuthServiceKey.self] = newValue }
+    }
+    var linearOAuthService: OAuthService? {
+        get { self[LinearOAuthServiceKey.self] }
+        set { self[LinearOAuthServiceKey.self] = newValue }
     }
 }

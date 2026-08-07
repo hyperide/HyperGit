@@ -1,5 +1,6 @@
-// Config — loads OAuth credentials from environment variables or Config.plist.
-// Priority: 1) Environment variables, 2) Config.plist in bundle.
+// Config — loads OAuth client IDs from environment variables or Config.plist.
+// Client secrets are intentionally environment-only; never bundle them in app
+// resources. Native apps need public PKCE/device flows or a backend broker.
 import Foundation
 
 public struct OAuthAppConfig: Sendable {
@@ -22,20 +23,18 @@ public struct OAuthAppConfig: Sendable {
         let linearClientId = ProcessInfo.processInfo.environment["HYPERGIT_LINEAR_CLIENT_ID"] ?? ""
         let linearClientSecret = ProcessInfo.processInfo.environment["HYPERGIT_LINEAR_CLIENT_SECRET"] ?? ""
 
-        // 2. Config.plist in bundle (for release builds)
+        // 2. Config.plist in bundle (client IDs only; secrets must not ship)
         var githubId = githubClientId
-        var githubSecret = githubClientSecret
+        let githubSecret = githubClientSecret
         var linearId = linearClientId
-        var linearSecret = linearClientSecret
+        let linearSecret = linearClientSecret
 
-        if githubId.isEmpty || githubSecret.isEmpty || linearId.isEmpty || linearSecret.isEmpty {
+        if githubId.isEmpty || linearId.isEmpty {
             if let url = Bundle.main.url(forResource: "Config", withExtension: "plist"),
                let data = try? Data(contentsOf: url),
                let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: String] {
                 if githubId.isEmpty { githubId = plist["GITHUB_CLIENT_ID"] ?? "" }
-                if githubSecret.isEmpty { githubSecret = plist["GITHUB_CLIENT_SECRET"] ?? "" }
                 if linearId.isEmpty { linearId = plist["LINEAR_CLIENT_ID"] ?? "" }
-                if linearSecret.isEmpty { linearSecret = plist["LINEAR_CLIENT_SECRET"] ?? "" }
             }
         }
 
@@ -70,7 +69,7 @@ extension OAuthConfig {
             clientId: config.linearClientId,
             clientSecret: config.linearClientSecret,
             redirectURI: "hypergit://oauth-callback?provider=linear",
-            scopes: ["read", "write"],
+            scopes: ["read"],
             authURL: URL(string: "https://linear.app/oauth/authorize")!,
             tokenURL: URL(string: "https://api.linear.app/oauth/token")!
         )

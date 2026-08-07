@@ -38,10 +38,19 @@ xcodebuild -scheme HyperGit -destination 'generic/platform=iOS Simulator' build
 # or open HyperGit.xcodeproj in Xcode and run on a simulator
 ```
 
+To install on a physical iPhone with a free Apple ID:
+
+1. Open Xcode → Settings → Accounts and add your Apple ID.
+2. In the `HyperGit` target, open Signing & Capabilities and select your Personal Team.
+3. Connect the iPhone and press Run (`⌘R`).
+4. On the phone, trust the developer profile in Settings → General → VPN & Device Management.
+
 ## Run
 
 1. Open Settings in the app.
 2. Paste a **GitHub** classic PAT (`repo` scope) and/or a **Linear** personal API key.
+   OAuth sign-in remains disabled unless a safe public/brokered flow is configured;
+   client secrets must not be bundled in the app.
 3. Pull to refresh on Repos / Tickets. Everything fetched is cached locally and
    available offline.
 
