@@ -21,11 +21,22 @@ extension HGPullRequest {
                       body: "Bootstrap spec, conventions, guardrails.",
                       state: .open, isDraft: false, isMerged: false,
                       author: HGUser(id: 7, login: "agent", name: "HyperGit Agent", avatarURL: nil, htmlURL: nil),
-                      head: "feature/init", base: "main", additions: 420, deletions: 0,
+                      head: "feature/init", headSHA: "a1b2c3d4e5f6", base: "main", additions: 420, deletions: 0,
                       changedFiles: 5, commits: 1, commentsCount: 0,
                       createdAt: Date(timeIntervalSinceNow: -7200),
                       updatedAt: Date(timeIntervalSinceNow: -3600), mergedAt: nil,
                       htmlURL: URL(string: "https://github.com/hyperide/HyperGit/pull/1")),
+    ]
+}
+
+extension HGCheckRun {
+    public static let samples: [HGCheckRun] = [
+        HGCheckRun(id: 1, name: "build", status: .completed, conclusion: .success,
+                   detailsURL: URL(string: "https://github.com/hyperide/HyperGit/actions/runs/1"),
+                   startedAt: Date(timeIntervalSinceNow: -600), completedAt: Date(timeIntervalSinceNow: -540)),
+        HGCheckRun(id: 2, name: "test", status: .inProgress, conclusion: nil,
+                   detailsURL: URL(string: "https://github.com/hyperide/HyperGit/actions/runs/2"),
+                   startedAt: Date(timeIntervalSinceNow: -300), completedAt: nil),
     ]
 }
 
