@@ -38,14 +38,22 @@ struct TicketsView: View {
                                     title: "No tickets",
                                     subtitle: "Add a Linear API key in Settings to pull your issues.")
                 } else {
-                    List {
-                        if case .error(let message) = store.ticketsState {
-                            Text(message)
-                                .font(.footnote)
-                                .foregroundStyle(.orange)
+                    List(store.tickets) { ticket in TicketRow(ticket: ticket) }
+                        .refreshable { await store.loadTickets() }
+                        .safeAreaInset(edge: .top) {
+                            // `ticketsStaleReason` and `.error` are mutually exclusive
+                            // (AppStore only sets one at a time), so this shows exactly
+                            // one banner: the stale-cache reason on a clean `.loaded`, or
+                            // the failure message when `.error` still has cached tickets
+                            // to fall back to. Without the `.error` branch here, a hard
+                            // failure with non-empty tickets would show no indicator at
+                            // all — the previous inline error `Text` this replaced.
+                            if let reason = store.ticketsStaleReason {
+                                OfflineBanner(reason: reason)
+                            } else if case .error(let message) = store.ticketsState {
+                                OfflineBanner(reason: message)
+                            }
                         }
-                        ForEach(store.tickets) { ticket in TicketRow(ticket: ticket) }
-                    }
                 }
             }
         }

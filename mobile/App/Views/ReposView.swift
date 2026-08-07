@@ -48,6 +48,10 @@ struct ReposView: View {
         .navigationDestination(for: HGRepo.self) { repo in
             RepoDetailView(repo: repo)
         }
+        .refreshable { await store.loadRepositories() }
+        .safeAreaInset(edge: .top) {
+            if let reason = store.reposStaleReason { OfflineBanner(reason: reason) }
+        }
     }
 }
 

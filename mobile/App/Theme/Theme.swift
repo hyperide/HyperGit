@@ -42,6 +42,21 @@ struct StateBanner: View {
     }
 }
 
+/// Shown above a list when it's rendering cache fallback data (the network refresh
+/// failed but the local cache had something to show) — so cached content never looks
+/// indistinguishable from a fresh fetch (issue #4 acceptance criteria).
+struct OfflineBanner: View {
+    let reason: String
+    var body: some View {
+        Label("Showing cached data — \(reason)", systemImage: "icloud.slash")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.thinMaterial)
+    }
+}
+
 extension View {
     /// Inline navigation-bar title on iOS; no-op on macOS (cross-platform compile).
     @ViewBuilder

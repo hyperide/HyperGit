@@ -50,6 +50,44 @@ struct ModelsTests {
         }
     }
 
+    @Test("AppStore sets reposStaleReason on cache fallback and clears it once the network recovers")
+    func storeStaleReasonSetThenCleared() async {
+        actor Toggleable: RepositorySource {
+            var isOnline = true
+            func setOnline(_ value: Bool) { isOnline = value }
+            func currentUser() async throws -> HGUser { throw HTTPError.invalidResponse }
+            func repositories() async throws -> [HGRepo] {
+                guard isOnline else { throw HTTPError.invalidResponse }
+                return HGRepo.samples
+            }
+            func fileTree(owner: String, repo: String, branch: String?) async throws -> [HGFileEntry] { [] }
+            func fileContent(owner: String, repo: String, path: String, ref: String?) async throws -> HGFileContent { throw HTTPError.invalidResponse }
+            func pullRequests(owner: String, repo: String, state: HGPullRequest.State) async throws -> [HGPullRequest] { [] }
+            func pullRequest(owner: String, repo: String, number: Int) async throws -> HGPullRequest { throw HTTPError.invalidResponse }
+            func pullRequestFiles(owner: String, repo: String, number: Int) async throws -> [HGFileChange] { [] }
+            func commits(owner: String, repo: String, branch: String?) async throws -> [HGCommit] { [] }
+            func issues(owner: String, repo: String, state: HGIssue.State) async throws -> [HGIssue] { [] }
+            func issue(owner: String, repo: String, number: Int) async throws -> HGIssue { throw HTTPError.invalidResponse }
+        }
+
+        let source = Toggleable()
+        let store = await AppStore(repoSource: source, cache: MemoryCacheStore())
+
+        await store.loadRepositories()
+        await MainActor.run { #expect(store.reposStaleReason == nil) }
+
+        await source.setOnline(false)
+        await store.loadRepositories()
+        await MainActor.run {
+            #expect(store.reposState == .loaded)
+            #expect(store.reposStaleReason != nil)
+        }
+
+        await source.setOnline(true)
+        await store.loadRepositories()
+        await MainActor.run { #expect(store.reposStaleReason == nil) }
+    }
+
     @Test("AppStore keeps partial ticket results when pagination limit is hit")
     func storeKeepsPartialTickets() async {
         let partial = Self.ticket(

@@ -18,6 +18,10 @@ struct IssuesView: View {
                     PlaceholderView(icon: "smallcircle.filled.circle", title: "No issues", subtitle: "")
                 } else {
                     List(store.issues) { issue in IssueRow(issue: issue) }
+                        .refreshable { await store.loadIssues(state: state) }
+                        .safeAreaInset(edge: .top) {
+                            if let reason = store.issuesStaleReason { OfflineBanner(reason: reason) }
+                        }
                 }
             }
         }
