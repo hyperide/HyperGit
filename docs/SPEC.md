@@ -215,7 +215,7 @@ smart search/blame, mobile API). Finalized by a dedicated research issue.
 - [x] SwiftUI app scaffold.
 - [x] GitHub API client (auth, repos, tree, files, PRs, issues, commits, pagination).
 - [ ] Linear client (tickets) — #3.
-- [ ] Local-first cache (SwiftData) — #4.
+- [x] Local-first cache (SwiftData) — #4.
 - [ ] UI screens (repo list, file tree, file viewer, PR, issues, tickets) — #5.
 
 ### Phase 2 — Mobile smart features
