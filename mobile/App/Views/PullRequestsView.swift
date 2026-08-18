@@ -20,6 +20,10 @@ struct PullRequestsView: View {
                             PullRequestDetailView(number: pr.number)
                         } label: { PRRow(pr: pr) }
                     }
+                    .refreshable { await store.loadPullRequests() }
+                    .safeAreaInset(edge: .top) {
+                        if let reason = store.prsStaleReason { OfflineBanner(reason: reason) }
+                    }
                 }
             }
         }
