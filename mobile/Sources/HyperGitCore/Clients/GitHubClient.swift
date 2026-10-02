@@ -107,6 +107,13 @@ public struct GitHubClient: RepositorySource, TicketSource {
         }
     }
 
+    /// Check runs (GitHub Checks API) for a commit — `ref` may be a SHA, branch, or tag name.
+    public func checkRuns(owner: String, repo: String, ref: String) async throws -> [HGCheckRun] {
+        try await paged("repos/\(owner)/\(repo)/commits/\(ref)/check-runs?per_page=100") {
+            try GitHub.decode(GitHub.CheckRunsResponseDTO.self, from: $0).checkRuns.map { $0.toModel() }
+        }
+    }
+
     public func commits(owner: String, repo: String, branch: String?) async throws -> [HGCommit] {
         var resource = "repos/\(owner)/\(repo)/commits?per_page=100"
         if let branch { resource += "&sha=\(branch)" }
@@ -316,12 +323,13 @@ enum GitHub {
             case mergedAt = "merged_at"
             case htmlUrl = "html_url"
         }
-        struct RefDTO: Decodable { let ref: String? }
+        struct RefDTO: Decodable { let ref: String?; let sha: String? }
         func toModel() -> HGPullRequest {
             HGPullRequest(id: id, number: number, title: title, body: body,
                           state: HGPullRequest.State(rawValue: state) ?? .open,
                           isDraft: draft ?? false, isMerged: merged ?? false,
-                          author: user?.toModel(), head: head?.ref ?? "", base: base?.ref ?? "",
+                          author: user?.toModel(), head: head?.ref ?? "", headSHA: head?.sha,
+                          base: base?.ref ?? "",
                           additions: additions ?? 0, deletions: deletions ?? 0,
                           changedFiles: changedFiles ?? 0, commits: commits ?? 0,
                           commentsCount: comments ?? 0, createdAt: createdAt, updatedAt: updatedAt,
@@ -344,6 +352,34 @@ enum GitHub {
             HGFileChange(path: filename, previousPath: previousFilename,
                          status: HGFileChange.Status(rawValue: status) ?? .modified,
                          additions: additions, deletions: deletions, patch: patch)
+        }
+    }
+
+    struct CheckRunsResponseDTO: Decodable {
+        let checkRuns: [CheckRunDTO]
+        enum CodingKeys: String, CodingKey { case checkRuns = "check_runs" }
+    }
+
+    struct CheckRunDTO: Decodable {
+        let id: Int
+        let name: String
+        let status: String
+        let conclusion: String?
+        let detailsUrl: String?
+        let startedAt: Date?
+        let completedAt: Date?
+        enum CodingKeys: String, CodingKey {
+            case id, name, status, conclusion
+            case detailsUrl = "details_url"
+            case startedAt = "started_at"
+            case completedAt = "completed_at"
+        }
+        func toModel() -> HGCheckRun {
+            HGCheckRun(id: id, name: name,
+                       status: HGCheckRun.Status(rawValue: status) ?? .queued,
+                       conclusion: conclusion.flatMap(HGCheckRun.Conclusion.init(rawValue:)),
+                       detailsURL: detailsUrl.flatMap(URL.init(string:)),
+                       startedAt: startedAt, completedAt: completedAt)
         }
     }
 

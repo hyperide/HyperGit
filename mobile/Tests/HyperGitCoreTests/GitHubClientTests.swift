@@ -120,6 +120,64 @@ struct GitHubClientTests {
         #expect(files[0].patch?.contains("+new") == true)
     }
 
+    @Test("pull request head sha is captured for check-run lookups")
+    func pullRequestHeadSHA() async throws {
+        let json = Data(#"""
+        [{"id": 10, "number": 1, "title": "PR", "body": null, "state": "open",
+          "draft": false, "merged": false, "user": null,
+          "head": {"ref": "f", "sha": "abc123"}, "base": {"ref": "main", "sha": "def456"},
+          "comments": 1, "created_at": "2024-01-01T00:00:00Z", "updated_at": "2024-01-01T00:00:00Z",
+          "merged_at": null, "html_url": null}]
+        """#.utf8)
+        let c = routedClient(["repos/hyperide/HyperGit/pulls": json])
+        let prs = try await c.pullRequests(owner: "hyperide", repo: "HyperGit", state: .open)
+        #expect(prs[0].headSHA == "abc123")
+    }
+
+    @Test("check runs map status/conclusion and drop the total_count envelope")
+    func checkRunsMapping() async throws {
+        let json = Data(#"""
+        {"total_count": 2, "check_runs": [
+          {"id": 1, "name": "build", "status": "completed", "conclusion": "success",
+           "details_url": "https://ci.example/1", "started_at": "2024-01-01T00:00:00Z",
+           "completed_at": "2024-01-01T00:05:00Z"},
+          {"id": 2, "name": "lint", "status": "in_progress", "conclusion": null,
+           "details_url": null, "started_at": "2024-01-01T00:00:00Z", "completed_at": null}
+        ]}
+        """#.utf8)
+        let c = routedClient(["repos/o/r/commits/abc123/check-runs": json])
+        let runs = try await c.checkRuns(owner: "o", repo: "r", ref: "abc123")
+        #expect(runs.count == 2)
+        #expect(runs[0].name == "build")
+        #expect(runs[0].status == .completed)
+        #expect(runs[0].conclusion == .success)
+        #expect(runs[0].detailsURL?.absoluteString == "https://ci.example/1")
+        #expect(runs[1].status == .inProgress)
+        #expect(runs[1].conclusion == nil)
+    }
+
+    @Test("check runs follow Link rel=next across the envelope response's pages")
+    func checkRunsPagination() async throws {
+        let page1 = Data(#"""
+        {"total_count": 2, "check_runs": [
+          {"id": 1, "name": "build", "status": "completed", "conclusion": "success",
+           "details_url": null, "started_at": null, "completed_at": null}
+        ]}
+        """#.utf8)
+        let page2 = Data(#"""
+        {"total_count": 2, "check_runs": [
+          {"id": 2, "name": "lint", "status": "completed", "conclusion": "success",
+           "details_url": null, "started_at": null, "completed_at": null}
+        ]}
+        """#.utf8)
+        let c = client { path in
+            if path.contains("page=2") { return (page2, [:]) }
+            return (page1, ["link": #"<https://api.github.com/repos/o/r/commits/abc/check-runs?page=2>; rel="next""#])
+        }
+        let runs = try await c.checkRuns(owner: "o", repo: "r", ref: "abc")
+        #expect(runs.map(\.name).sorted() == ["build", "lint"])
+    }
+
     @Test("commits map subject, shortSHA and author login")
     func commitsParsing() async throws {
         let json = Data(#"""

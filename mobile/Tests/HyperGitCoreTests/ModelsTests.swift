@@ -24,6 +24,89 @@ struct ModelsTests {
         #expect(u.displayName == "octo")
     }
 
+    @Test("HGChecksSummary rolls up check runs: none/pending/passing/failing")
+    func checksSummaryRollup() {
+        func run(_ status: HGCheckRun.Status, _ conclusion: HGCheckRun.Conclusion?) -> HGCheckRun {
+            HGCheckRun(id: 1, name: "x", status: status, conclusion: conclusion,
+                      detailsURL: nil, startedAt: nil, completedAt: nil)
+        }
+        #expect(HGChecksSummary(runs: []) == .none)
+        #expect(HGChecksSummary(runs: [run(.inProgress, nil)]) == .pending)
+        #expect(HGChecksSummary(runs: [run(.completed, .success), run(.completed, .neutral)]) == .passing)
+        #expect(HGChecksSummary(runs: [run(.completed, .success), run(.completed, .failure)]) == .failing)
+    }
+
+    @Test("HGChecksSummary treats skipped and stale conclusions as non-blocking (passing)")
+    func checksSummarySkippedAndStaleArePassing() {
+        // Deliberate policy, matching GitHub's own PR UI: a conditionally
+        // skipped check isn't a blocker, and a stale (superseded) result
+        // isn't treated as a failure either. Pinned so moving either bucket
+        // later is a reviewed choice, not an accidental regression.
+        func run(_ conclusion: HGCheckRun.Conclusion) -> HGCheckRun {
+            HGCheckRun(id: 1, name: "x", status: .completed, conclusion: conclusion,
+                      detailsURL: nil, startedAt: nil, completedAt: nil)
+        }
+        #expect(HGChecksSummary(runs: [run(.skipped)]) == .passing)
+        #expect(HGChecksSummary(runs: [run(.stale)]) == .passing)
+    }
+
+    @Test("HGChecksSummary reports a failure even while a sibling check is still running")
+    func checksSummaryFailureBeatsPending() {
+        func run(_ status: HGCheckRun.Status, _ conclusion: HGCheckRun.Conclusion?) -> HGCheckRun {
+            HGCheckRun(id: 1, name: "x", status: status, conclusion: conclusion,
+                      detailsURL: nil, startedAt: nil, completedAt: nil)
+        }
+        // One job already failed, another is still building — this must not
+        // read as "pending" and hide the failure.
+        let mixed = [run(.completed, .failure), run(.inProgress, nil)]
+        #expect(HGChecksSummary(runs: mixed) == .failing)
+    }
+
+    @Test("HGChecksSummary treats a completed run with no recognized conclusion as failing, not passing")
+    func checksSummaryUnknownConclusionIsConservative() {
+        // GitHub only omits `conclusion` while a run is queued/in-progress —
+        // never once completed — so a nil conclusion on a *completed* run
+        // means "an unrecognized conclusion string", not "not decided yet".
+        // Defaulting that into the passing bucket would hide a real failure
+        // (or a future GitHub conclusion this build doesn't know about).
+        let unknown = HGCheckRun(id: 1, name: "x", status: .completed, conclusion: nil,
+                                 detailsURL: nil, startedAt: nil, completedAt: nil)
+        #expect(HGChecksSummary(runs: [unknown]) == .failing)
+    }
+
+    @Test("HGChecksSummary honors a failing conclusion even if the run's status wasn't recognized as completed")
+    func checksSummaryFailingConclusionWinsOverUnrecognizedStatus() {
+        // The DTO falls back unrecognized status strings to `.queued`; a run
+        // with a real (failing) conclusion attached has still genuinely
+        // finished regardless of that fallback, and must not read as
+        // "pending" forever.
+        let run = HGCheckRun(id: 1, name: "x", status: .queued, conclusion: .failure,
+                             detailsURL: nil, startedAt: nil, completedAt: nil)
+        #expect(HGChecksSummary(runs: [run]) == .failing)
+    }
+
+    @Test("HGPullRequest.checksRef is the head SHA, or nil — never the ambiguous branch name")
+    func pullRequestChecksRefNeverFallsBackToBranchName() {
+        let withSHA = HGPullRequest(id: 1, number: 1, title: "t", body: nil, state: .open,
+                                    isDraft: false, isMerged: false, author: nil,
+                                    head: "feature", headSHA: "abc123", base: "main",
+                                    additions: 0, deletions: 0, changedFiles: 0, commits: 0,
+                                    commentsCount: 0, createdAt: nil, updatedAt: nil,
+                                    mergedAt: nil, htmlURL: nil)
+        #expect(withSHA.checksRef == "abc123")
+
+        // No headSHA (e.g. a non-GitHub source, or a stub) means "don't
+        // fetch checks" — NOT "fetch by branch name", which for a
+        // forked-repo PR would query the wrong repo's branch.
+        let withoutSHA = HGPullRequest(id: 2, number: 2, title: "t", body: nil, state: .open,
+                                       isDraft: false, isMerged: false, author: nil,
+                                       head: "feature", base: "main",
+                                       additions: 0, deletions: 0, changedFiles: 0, commits: 0,
+                                       commentsCount: 0, createdAt: nil, updatedAt: nil,
+                                       mergedAt: nil, htmlURL: nil)
+        #expect(withoutSHA.checksRef == nil)
+    }
+
     @Test("AppStore local-first fallback surfaces cache on network failure")
     func storeFallback() async {
         let cache = MemoryCacheStore()
