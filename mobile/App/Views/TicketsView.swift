@@ -1,4 +1,4 @@
-// Tickets tab — unified inbox across Linear and GitHub issues (SPEC §2.2).
+// Tickets tab + detail — unified inbox across Linear and GitHub issues (SPEC §2.2).
 import SwiftUI
 import HyperGitCore
 
@@ -38,7 +38,11 @@ struct TicketsView: View {
                                     title: "No tickets",
                                     subtitle: "Add a Linear API key in Settings to pull your issues.")
                 } else {
-                    List(store.tickets) { ticket in TicketRow(ticket: ticket) }
+                    List(store.tickets) { ticket in
+                        NavigationLink(value: ticket) {
+                            TicketRow(ticket: ticket)
+                        }
+                    }
                         .refreshable { await store.loadTickets() }
                         .safeAreaInset(edge: .top) {
                             // `ticketsStaleReason` and `.error` are mutually exclusive
@@ -56,6 +60,12 @@ struct TicketsView: View {
                         }
                 }
             }
+        }
+        // Registered unconditionally (not nested inside the non-empty branch
+        // above), matching IssuesView: a pushed detail view must keep resolving
+        // even if `store.tickets` later becomes empty or errors on a refresh.
+        .navigationDestination(for: HGTicket.self) { ticket in
+            TicketDetailView(ticket: ticket)
         }
         .task { if store.tickets.isEmpty { await store.loadTickets() } }
     }
@@ -78,5 +88,63 @@ struct TicketRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+struct TicketDetailView: View {
+    let ticket: HGTicket
+
+    var body: some View {
+        List {
+            headerSection
+            metaSection
+            if let url = ticket.url {
+                Section {
+                    Link("Open in \(ticket.source == .linear ? "Linear" : "GitHub")", destination: url)
+                }
+            }
+        }
+        .navigationTitle(ticket.identifier)
+        .inlineNavigationBarTitle()
+    }
+
+    private var headerSection: some View {
+        Section {
+            Text(ticket.title).font(.headline)
+            HStack(spacing: 8) {
+                Theme.badge(text: ticket.source.rawValue.capitalized,
+                            color: ticket.source == .linear ? .teal : .indigo)
+                Theme.badge(text: ticket.stateName)
+            }
+            if !ticket.labels.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(ticket.labels, id: \.self) { label in
+                            Theme.badge(text: label)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Omitted entirely (not just left empty) when the ticket carries none of
+    /// team/assignee/updatedAt — an empty `Section` still renders a blank row
+    /// of chrome in a `List`, which would look like a rendering glitch.
+    @ViewBuilder
+    private var metaSection: some View {
+        if ticket.team != nil || ticket.assignee != nil || ticket.updatedAt != nil {
+            Section {
+                if let team = ticket.team {
+                    LabeledContent("Team", value: team)
+                }
+                if let assignee = ticket.assignee {
+                    LabeledContent("Assignee", value: assignee.displayName)
+                }
+                if let updated = ticket.updatedAt {
+                    LabeledContent("Updated", value: updated.formatted(.relative(presentation: .named)))
+                }
+            }
+        }
     }
 }
